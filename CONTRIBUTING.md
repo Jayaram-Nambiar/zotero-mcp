@@ -2,9 +2,9 @@
 
 This repository is meant to stay small enough for a later agent or a person to change safely.
 
-1. Run `python -m unittest discover -s tests` before you commit.
+1. Run `python -m unittest discover -s tests` before you commit, with the interpreter where you installed the package in editable mode (`python -m pip install -e .`). The tests run offline.
 2. Keep tool names aligned with what they do. `search_zotero` searches. `embed_zotero_word_fields` writes Word fields. A rename is a breaking change: record it in `CHANGELOG.md`.
 3. The Word field text is a compatibility contract. `tests/test_word.py` checks the `ADDIN ZOTERO_ITEM CSL_CITATION` and `ADDIN ZOTERO_BIBL` instructions and the `ZOTERO_PREF_*` properties. Update those tests in the same change as the writer.
 4. Do not copy Zotero's source into this repository. Zotero is licensed under the GNU AGPL. This project is MIT and implements the documented field format itself.
-5. Do not commit API keys, user IDs, `.env` files, or sample documents from a real library.
-6. Bump `version` in `pyproject.toml`, `__version__` in `src/zotero_mcp/__init__.py`, and `version` in `CITATION.cff` together.
+5. Do not commit API keys, user IDs, `.env` files, or sample documents from a real library. Keep real credentials out of tests too: on Windows the server falls back to the stored user environment, so a credential test replaces `zotero_mcp.client._windows_environment` with a fake (see `_credentials()` in `tests/test_client.py`).
+6. Bump `version` in `pyproject.toml`, `__version__` in `src/zotero_mcp/__init__.py`, and `version` in `CITATION.cff` together, and add a `CHANGELOG.md` entry.

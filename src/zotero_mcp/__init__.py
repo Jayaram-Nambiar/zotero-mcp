@@ -1,3 +1,3 @@
 """Personal Zotero library tools for Model Context Protocol clients."""
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"

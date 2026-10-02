@@ -1,23 +1,17 @@
 # zotero-mcp
 
-A [Model Context Protocol](https://modelcontextprotocol.io/) server for one person's Zotero library. It can search the library, call the [Zotero Web API v3](https://www.zotero.org/support/dev/web_api/v3/basics), and write Microsoft Word fields that the [Zotero Word plugin](https://www.zotero.org/support/word_processor_plugin_usage) can refresh and restyle.
+A [Model Context Protocol](https://modelcontextprotocol.io/) server for one person's Zotero library. It can search the library, call the [Zotero Web API v3](https://www.zotero.org/support/dev/web_api/v3/basics), upload attachment files, and write Microsoft Word fields that the [Zotero Word plugin](https://www.zotero.org/support/word_processor_plugin_usage) can refresh and restyle.
 
-There is no operating-system setting that every coding agent reads. Install this package once, put your Zotero user ID and API key in your user environment, and point each agent at the same command:
-
-```bash
-python -m zotero_mcp
-```
-
-The process speaks MCP on stdin and stdout. Start it from the agent, not in a terminal where you expect a prompt.
+Set it up once for every agent you use: install the `zotero-mcp` command, store your Zotero user ID and API key as user environment variables, and point each agent at that command. Agents start the server themselves and talk to it over standard input and output, so there is nothing to keep running in a terminal.
 
 ## What you need
 
-- Python 3.10 or newer on `PATH` (`python` or, on Windows, `py -3`)
-- The [Zotero desktop app](https://www.zotero.org/download/) for fast local reads
-- A [zotero.org](https://www.zotero.org/user/register) account, its numeric user ID, and an API key
-- For Word citations: Microsoft Word and the [Zotero word-processor plugin](https://www.zotero.org/support/word_processor_plugin_installation)
+- Windows, macOS, or Linux, with [uv](https://docs.astral.sh/uv/) or [pipx](https://pipx.pypa.io/) to install the server. The server needs Python 3.10 or newer; uv downloads one if none is installed.
+- The [Zotero desktop app](https://www.zotero.org/download/), for fast local reads.
+- A [zotero.org](https://www.zotero.org/user/register) account, its numeric user ID, and an API key.
+- For Word citations: Microsoft Word and the [Zotero word-processor plugin](https://www.zotero.org/support/word_processor_plugin_installation).
 
-Reads try the desktop app at `http://127.0.0.1:23119/api` first. Zotero documents that local API as `localhost` port `23119`. This server uses `127.0.0.1` so an IPv6 localhost lookup does not stall. If the app is closed, or its library has no items yet, reads use `https://api.zotero.org`. Writes always use `api.zotero.org`, then sync back to the desktop app.
+Reads try the desktop app at `http://127.0.0.1:23119/api` first. Zotero documents that local API as `localhost` port `23119`; this server uses `127.0.0.1` so an IPv6 localhost lookup does not stall. If the app is closed, or its library has no items yet, reads use `https://api.zotero.org`. Writes always use `api.zotero.org`, and Zotero syncs them back to the desktop app.
 
 ## 1. Set up Zotero
 
@@ -34,9 +28,7 @@ To install the Word plugin, follow [Installing the Zotero word-processor plugin]
 
 ## 2. Store the user ID and API key
 
-Pick one place. Do not commit either value.
-
-**User environment (one copy for every agent that inherits it).** Restart the agent after setting these.
+Store both values once, as user environment variables. Every agent can then reach them, and neither value has to be written into an agent's config file. Do not commit either value. [`.env.example`](.env.example) lists the names; the server does not load `.env` files.
 
 Windows PowerShell:
 
@@ -45,6 +37,8 @@ Windows PowerShell:
 [Environment]::SetEnvironmentVariable("ZOTERO_API_KEY", "YOUR_API_KEY", "User")
 ```
 
+On Windows the server reads these variables itself whenever an agent does not pass them, so they take effect on the next request in every agent, with nothing to restart. That covers agents that withhold your variables from the servers they start, such as Claude Desktop, and Microsoft Store apps that still carry the environment from when you signed in.
+
 macOS and Linux, in `~/.zshrc` or `~/.bashrc`:
 
 ```bash
@@ -52,43 +46,83 @@ export ZOTERO_USER_ID="YOUR_USER_ID"
 export ZOTERO_API_KEY="YOUR_API_KEY"
 ```
 
-A macOS app started from the Dock does not read `~/.zshrc`. If an agent does not see the variables, put them in that agent's `env` block below.
-
-**Client config.** Paste the values only into the config file for that agent. Prefer the environment-variable reference when the client supports it, so the key is not stored twice.
-
-`.env.example` shows the variable names. This server does not load a `.env` file on its own.
+Agents started from a new terminal inherit these. Apps opened from the Dock or an application menu do not read shell profiles; for those, put the values in the agent's `env` block in step 4.
 
 ## 3. Install
 
-```bash
-python -m pip install "git+https://github.com/Jayaram-Nambiar/zotero-mcp.git"
-python -c "import zotero_mcp; print(zotero_mcp.__version__)"
-```
-
-On Windows, if `python` is the Microsoft Store alias, use `py -3` in place of `python` in every snippet below.
-
-From a clone:
+Install the server in its own environment, so that changes to other Python tools cannot break it:
 
 ```bash
-git clone https://github.com/Jayaram-Nambiar/zotero-mcp.git
-cd zotero-mcp
-python -m pip install .
+uv tool install "git+https://github.com/Jayaram-Nambiar/zotero-mcp.git"
 ```
 
-## 4. Connect an agent
+With pipx instead: `pipx install "git+https://github.com/Jayaram-Nambiar/zotero-mcp.git"`.
 
-Use the same server name, `zotero`, everywhere. After saving a config, reload MCP servers or restart the agent. The first successful `search_zotero` call confirms the setup.
+Either one installs a `zotero-mcp` command. `uv tool list` (or `pipx list`) shows the installed version. Agents need the command's full path:
 
-### Cursor
+| System | Full path |
+| --- | --- |
+| Windows | `%USERPROFILE%\.local\bin\zotero-mcp.exe`. `uv tool dir --bin` prints the folder. |
+| macOS, Linux | `~/.local/bin/zotero-mcp`. `uv tool dir --bin` prints the folder. |
 
-Global file, used by every project: `~/.cursor/mcp.json` on macOS and Linux, `%USERPROFILE%\.cursor\mcp.json` on Windows. A project file `.cursor/mcp.json` overrides it for that project. Cursor documents both in [MCP](https://cursor.com/docs/mcp).
+pipx uses the same folder by default; `pipx environment` shows it as `PIPX_BIN_DIR`.
+
+## 4. Connect your agents
+
+Add the server to each agent under the same name, `zotero`. The examples write the command as `zotero-mcp`. Replace it with the full path from step 3, because desktop apps do not always start with the `PATH` your terminal has:
+
+- JSON on Windows doubles each backslash: `"C:\\Users\\you\\.local\\bin\\zotero-mcp.exe"`.
+- TOML on Windows takes a literal string in single quotes: `'C:\Users\you\.local\bin\zotero-mcp.exe'`.
+- macOS and Linux: `"/Users/you/.local/bin/zotero-mcp"` or `"/home/you/.local/bin/zotero-mcp"`.
+
+After saving a config, reload the agent's MCP servers or restart the agent. The first successful `search_zotero` call confirms the setup.
+
+### Claude Code
+
+```bash
+claude mcp add --scope user --transport stdio zotero -- zotero-mcp
+```
+
+User scope makes the server available in every project, and `claude mcp get zotero` shows its status. Claude Code passes its environment to the server. Claude Code documents scopes in [Connect Claude Code to tools via MCP](https://code.claude.com/docs/en/mcp).
+
+### Claude Desktop
+
+Open **Settings → Developer → Edit Config**, or edit the file directly:
+
+| System | File |
+| --- | --- |
+| Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
+| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
 
 ```json
 {
   "mcpServers": {
     "zotero": {
-      "command": "python",
-      "args": ["-m", "zotero_mcp"],
+      "command": "zotero-mcp"
+    }
+  }
+}
+```
+
+Claude Desktop starts servers with system variables only, so it never passes yours. On Windows nothing more is needed, because the server reads the two variables itself. On macOS, add them to the entry and keep the file private:
+
+```json
+"env": {
+  "ZOTERO_USER_ID": "YOUR_USER_ID",
+  "ZOTERO_API_KEY": "YOUR_API_KEY"
+}
+```
+
+### Cursor
+
+`~/.cursor/mcp.json` (`%USERPROFILE%\.cursor\mcp.json` on Windows) applies to every project; `.cursor/mcp.json` inside a project applies to that project only. Cursor documents both in [Model Context Protocol](https://cursor.com/docs/mcp).
+
+```json
+{
+  "mcpServers": {
+    "zotero": {
+      "type": "stdio",
+      "command": "zotero-mcp",
       "env": {
         "ZOTERO_USER_ID": "${env:ZOTERO_USER_ID}",
         "ZOTERO_API_KEY": "${env:ZOTERO_API_KEY}"
@@ -98,133 +132,88 @@ Global file, used by every project: `~/.cursor/mcp.json` on macOS and Linux, `%U
 }
 ```
 
-### Claude Code
-
-User scope is available in every project. Claude Code documents the command and scopes in [MCP servers](https://code.claude.com/docs/en/mcp-servers).
-
-```bash
-claude mcp add --scope user --transport stdio zotero -- python -m zotero_mcp
-```
-
-If the variables are not already in the environment Claude Code sees:
-
-```bash
-claude mcp add --scope user --transport stdio --env ZOTERO_USER_ID=YOUR_USER_ID --env ZOTERO_API_KEY=YOUR_API_KEY zotero -- python -m zotero_mcp
-```
-
-A project file `.mcp.json` can be committed when it contains references rather than the key:
-
-```json
-{
-  "mcpServers": {
-    "zotero": {
-      "type": "stdio",
-      "command": "python",
-      "args": ["-m", "zotero_mcp"],
-      "env": {
-        "ZOTERO_USER_ID": "${ZOTERO_USER_ID}",
-        "ZOTERO_API_KEY": "${ZOTERO_API_KEY}"
-      }
-    }
-  }
-}
-```
-
-### ChatGPT and Codex
-
-The ChatGPT desktop app, the Codex CLI, and the Codex IDE extension share `~/.codex/config.toml`. A trusted project can also use `.codex/config.toml`. OpenAI documents this in [Model Context Protocol](https://learn.chatgpt.com/docs/extend/mcp) and the [configuration reference](https://developers.openai.com/codex/config-reference). The ChatGPT website chat does not launch a local program; use the desktop app or Codex.
-
-`env_vars` forwards variables that are already set, so the key stays out of the file:
-
-```toml
-[mcp_servers.zotero]
-command = "python"
-args = ["-m", "zotero_mcp"]
-env_vars = ["ZOTERO_USER_ID", "ZOTERO_API_KEY"]
-startup_timeout_sec = 30
-```
-
-Or from the CLI:
-
-```bash
-codex mcp add zotero -- python -m zotero_mcp
-```
-
-### Google Antigravity
-
-Antigravity documents MCP in [its MCP guide](https://antigravity.google/docs/mcp/). The global file is `~/.gemini/config/mcp_config.json` (`%USERPROFILE%\.gemini\config\mcp_config.json` on Windows). A workspace file is `.agents/mcp_config.json`. You can also open Manage MCP Servers and edit the raw config.
-
-```json
-{
-  "mcpServers": {
-    "zotero": {
-      "command": "python",
-      "args": ["-m", "zotero_mcp"],
-      "env": {
-        "ZOTERO_USER_ID": "YOUR_USER_ID",
-        "ZOTERO_API_KEY": "YOUR_API_KEY"
-      }
-    }
-  }
-}
-```
+`${env:NAME}` copies each variable from Cursor's environment when the server starts, so the key is not stored in the file.
 
 ### VS Code with GitHub Copilot
 
-Workspace file `.vscode/mcp.json`, or the user `mcp.json` from the command MCP: Open User Configuration. The shape is documented in the [MCP configuration reference](https://code.visualstudio.com/docs/copilot/reference/mcp-configuration). VS Code uses `servers`, not `mcpServers`.
+Run **MCP: Open User Configuration** to add the server for every workspace, or use `.vscode/mcp.json` for one workspace. VS Code uses `servers`, not `mcpServers`; the [MCP configuration reference](https://code.visualstudio.com/docs/agents/reference/mcp-configuration) describes the format.
 
 ```json
 {
   "servers": {
     "zotero": {
       "type": "stdio",
-      "command": "python",
-      "args": ["-m", "zotero_mcp"]
+      "command": "zotero-mcp"
     }
   }
 }
 ```
 
-Launch VS Code from a terminal that already has the two variables, or add an `env` object with your values. Do not commit that object.
+On macOS and Linux, start VS Code from a terminal that has the variables, or add an `env` object with the values and keep that file out of version control.
 
-### Claude Desktop
+### Codex
 
-| System | File |
-| --- | --- |
-| Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
-| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
-| Linux | `~/.config/Claude/claude_desktop_config.json` |
+The Codex app, CLI, and IDE extension read `~/.codex/config.toml` (`%USERPROFILE%\.codex\config.toml` on Windows). OpenAI documents the keys in the [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+
+```toml
+[mcp_servers.zotero]
+command = "zotero-mcp"
+env_vars = ["ZOTERO_USER_ID", "ZOTERO_API_KEY"]
+startup_timeout_sec = 30
+```
+
+`env_vars` forwards the two variables from Codex's environment, so the key stays out of the file. From the CLI: `codex mcp add zotero -- zotero-mcp`. ChatGPT in a web browser cannot start a program on your computer.
+
+### Google Antigravity
+
+The global file is `~/.gemini/config/mcp_config.json` (`%USERPROFILE%\.gemini\config\mcp_config.json` on Windows). In the app, **Additional Options (…) → MCP Servers** lists the connected servers and their tools. Antigravity documents the format in [its MCP guide](https://antigravity.google/docs/mcp/).
 
 ```json
 {
   "mcpServers": {
     "zotero": {
-      "command": "python",
-      "args": ["-m", "zotero_mcp"],
-      "env": {
-        "ZOTERO_USER_ID": "YOUR_USER_ID",
-        "ZOTERO_API_KEY": "YOUR_API_KEY"
+      "command": "zotero-mcp"
+    }
+  }
+}
+```
+
+Antigravity passes its environment to the server, so no `env` block is needed when it starts with the variables. Its config does not expand variable references; if Antigravity starts without the variables, as a macOS app opened from the Dock does, add an `env` object with the values.
+
+### opencode
+
+`~/.config/opencode/opencode.json`, or `opencode.jsonc` in the same folder. opencode documents local servers in [MCP servers](https://opencode.ai/docs/mcp-servers/).
+
+```json
+{
+  "mcp": {
+    "zotero": {
+      "type": "local",
+      "command": ["zotero-mcp"],
+      "enabled": true,
+      "environment": {
+        "ZOTERO_USER_ID": "{env:ZOTERO_USER_ID}",
+        "ZOTERO_API_KEY": "{env:ZOTERO_API_KEY}"
       }
     }
   }
 }
 ```
 
-### Perplexity
+opencode replaces `{env:NAME}` with the variable's value when it loads the file.
 
-Perplexity's published MCP docs describe connecting *to* Perplexity from another client: [Perplexity MCP server](https://docs.perplexity.ai/docs/getting-started/integrations/mcp-server) and [Computer](https://docs.perplexity.ai/docs/getting-started/integrations/computer-mcp-server). They do not document loading this local stdio server into the Perplexity app. If a Perplexity client later accepts a local `mcpServers` command, use the same `python -m zotero_mcp` entry as Cursor.
+### Other MCP clients
 
-### Any other MCP client
-
-A client that can launch a stdio server needs:
+A client that can start a local server needs:
 
 | Setting | Value |
 | --- | --- |
-| Command | `python` |
-| Arguments | `-m`, `zotero_mcp` |
-| Environment | `ZOTERO_USER_ID`, `ZOTERO_API_KEY` |
+| Transport | stdio |
+| Command | The full path of `zotero-mcp` from step 3 |
+| Arguments | None |
+| Environment | `ZOTERO_USER_ID` and `ZOTERO_API_KEY`; optional on Windows |
 
-The transport is stdio. This package does not open a network port.
+The server does not open a network port. Perplexity's MCP documentation covers connecting other clients *to* Perplexity ([MCP server](https://docs.perplexity.ai/docs/getting-started/integrations/mcp-server)), not starting a local server from the Perplexity app.
 
 ## 5. Use the tools
 
@@ -240,7 +229,7 @@ The transport is stdio. This package does not open a network port.
 
 Search results are one page. Call again with `start` set to the returned `next_start` until `next_start` is null. Item keys are eight letters or digits. Write requests are documented in [Write Requests](https://www.zotero.org/support/dev/web_api/v3/write_requests) and [File Uploads](https://www.zotero.org/support/dev/web_api/v3/file_upload).
 
-From Python, with the same environment variables:
+The tools are also plain Python functions. In an environment where the package is installed (see [Development](#development)):
 
 ```python
 from zotero_mcp.server import embed_zotero_word_fields, search_zotero
@@ -286,15 +275,31 @@ The default output is `draft.zotero.docx` next to the original. The original is 
 
 Open the new file in Word and choose **Zotero → Refresh**. Document Preferences can change the citation style after that. The numbers you see before Refresh are a readable stand-in; Refresh rewrites them from the style.
 
-The writer covers body paragraphs, table cells, headers, and footers. It does not scan footnotes or text boxes. A paragraph that contains a marker is rewritten as ordinary runs plus fields, so mixed bold or italic in that paragraph is not kept. The fields are in-text Word fields. LibreOffice stores Zotero citations as reference marks, which this writer does not emit.
+The writer covers body paragraphs, table cells, and each section's main header and footer. It does not scan footnotes, text boxes, or first-page and even-page headers. A paragraph that contains a marker is rewritten as ordinary runs plus fields, so mixed bold or italic in that paragraph is not kept. The fields are in-text Word fields. LibreOffice stores Zotero citations as reference marks, which this writer does not emit.
 
 Citation clusters are linked to your personal library. `zotero_api` can still address a group library with a `groups/GROUPID/...` path. A collaborator on another Zotero account will see the embedded citation data and can restyle it; Refresh updates the live item only for the account that owns the user ID in the URI.
+
+## Update or remove
+
+Update to the latest version on GitHub:
+
+```bash
+uv tool upgrade zotero-mcp
+```
+
+With pipx: `pipx upgrade zotero-mcp`. Then restart each agent, or reload its MCP servers, so that it starts the new version. On Windows a running server keeps its files open; if the upgrade reports a file in use, quit your agents and run it again.
+
+To remove the server, run `uv tool uninstall zotero-mcp` (or `pipx uninstall zotero-mcp`) and delete the `zotero` entry from each agent's config.
+
+Keep a single installation. Agents that point at different copies run different versions.
 
 ## Troubleshooting
 
 | What you see | What to do |
 | --- | --- |
-| `Unconfigured` | The agent process cannot see `ZOTERO_USER_ID` or `ZOTERO_API_KEY`. Restart it after changing user variables, or set `env` in that agent's config. |
+| `Unconfigured` | The server found no usable user ID or API key. Set them as in step 2. On Windows the next request picks them up. Elsewhere, restart the agent, or put the values in its `env` block. |
+| The agent cannot start the server | Use the full path of `zotero-mcp` from step 3 as the command. |
+| An agent runs an older version | Run `uv tool list`, remove any other copy of the server, point every agent at the same command, and restart the agent. |
 | Search is empty while the website shows items | The desktop library has other items, and this key is not in it. Sync Zotero. A missing local record is not fetched from the website, because the local library is the copy being edited. |
 | Word shows `ADDIN ZOTERO_ITEM` | Field codes are visible. Press Alt+F9 (Option-Fn-F9 on a Mac), or follow the [field-code article](https://www.zotero.org/support/kb/word_field_codes). |
 | Zotero asks you to pick a style | The document has no `ZOTERO_PREF_*` properties. Run `embed_zotero_word_fields` again. |
@@ -303,11 +308,14 @@ Citation clusters are linked to your personal library. `zotero_api` can still ad
 ## Development
 
 ```bash
-python -m pip install -e .
-python -m unittest discover -s tests
+git clone https://github.com/Jayaram-Nambiar/zotero-mcp.git
+cd zotero-mcp
+python -m venv .venv
+.venv/Scripts/python -m pip install -e .
+.venv/Scripts/python -m unittest discover -s tests
 ```
 
-`CONTRIBUTING.md` is the maintenance note for the next person or agent.
+On macOS and Linux the interpreter is `.venv/bin/python`. The tests run offline. Agents keep running the copy installed in step 3, so upgrade it after a change reaches GitHub. [CONTRIBUTING.md](CONTRIBUTING.md) lists the rules for changes.
 
 ## Acknowledgements
 
