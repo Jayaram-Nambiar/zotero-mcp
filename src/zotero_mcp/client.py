@@ -2,8 +2,10 @@
 
 Reads prefer the desktop app at http://127.0.0.1:23119/api and use
 https://api.zotero.org when that library is empty or not running. Writes always
-use api.zotero.org. The API key is read from the environment and sent only as a
-header. It is never accepted as a tool argument and never returned.
+use api.zotero.org. The user ID and API key come from the process environment,
+or on Windows from the user or system environment variables when the agent does
+not pass them. The key is sent only as a header. It is never accepted as a tool
+argument and never returned.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import json
 import logging
 import os
 import re
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -45,23 +48,59 @@ _METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE"})
 _SKIP_TYPES = frozenset({"attachment", "note", "annotation"})
 _KEY = re.compile(r"^[A-Za-z0-9]{8}$")
 _TAG = re.compile(r"<[^>]+>")
+_PLACEHOLDER = "YOUR_"
+_WINDOWS_ENVIRONMENT = (
+    ("HKEY_CURRENT_USER", "Environment"),
+    ("HKEY_LOCAL_MACHINE", r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+)
 
 _local_has_items = False
 _logged_empty_local = False
 
 
+def _windows_environment(name: str) -> str:
+    """Return a variable as Windows stores it for new programs: the user value, then the system value."""
+    if sys.platform != "win32":
+        return ""
+    import winreg
+
+    for hive, path in _WINDOWS_ENVIRONMENT:
+        try:
+            with winreg.OpenKey(getattr(winreg, hive), path) as key:
+                value, kind = winreg.QueryValueEx(key, name)
+        except OSError:
+            continue
+        if isinstance(value, str) and value.strip():
+            return winreg.ExpandEnvironmentStrings(value) if kind == winreg.REG_EXPAND_SZ else value
+    return ""
+
+
+def _credential(name: str) -> str:
+    """Return ZOTERO_USER_ID or ZOTERO_API_KEY, or "" when it is unset or a placeholder.
+
+    The agent's environment wins. Some agents start servers without user
+    variables (Claude Desktop) or with an environment from before they were set
+    (Microsoft Store apps), so on Windows a missing, empty, or placeholder value
+    falls back to the stored user or system variable.
+    """
+    value = os.environ.get(name, "").strip()
+    if not value or _PLACEHOLDER in value:
+        value = _windows_environment(name).strip()
+    return "" if _PLACEHOLDER in value else value
+
+
 def web_credentials() -> tuple[str, str] | None:
-    """Return (user id, api key) when both environment values are usable."""
-    user_id = os.environ.get("ZOTERO_USER_ID", "").strip()
-    api_key = os.environ.get("ZOTERO_API_KEY", "").strip()
-    if not user_id.isdigit() or not api_key or "YOUR_" in api_key:
+    """Return (user id, api key) when both values are usable."""
+    user_id = _credential("ZOTERO_USER_ID")
+    api_key = _credential("ZOTERO_API_KEY")
+    if not user_id.isdigit() or not api_key:
         return None
     return user_id, api_key
 
 
 def require_user_id() -> str:
     """Return the numeric zotero.org user id used in Word citation URIs."""
-    user_id = os.environ.get("ZOTERO_USER_ID", "").strip()
+    user_id = _credential("ZOTERO_USER_ID")
     if not user_id.isdigit():
         raise UnconfiguredError(
             "Set ZOTERO_USER_ID to the numeric user ID shown on "

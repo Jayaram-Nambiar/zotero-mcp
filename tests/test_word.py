@@ -8,10 +8,12 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 from xml.etree import ElementTree
 
 from docx import Document
 
+from zotero_mcp import client
 from zotero_mcp.server import embed_zotero_word_fields
 from zotero_mcp.word import (
     EmbeddedItem,
@@ -153,7 +155,8 @@ class WordFieldTests(unittest.TestCase):
     def test_embed_tool_requires_user_id(self) -> None:
         previous = os.environ.pop("ZOTERO_USER_ID", None)
         try:
-            result = embed_zotero_word_fields("draft.docx")
+            with mock.patch.object(client, "_windows_environment", return_value=""):
+                result = embed_zotero_word_fields("draft.docx")
         finally:
             if previous is not None:
                 os.environ["ZOTERO_USER_ID"] = previous
