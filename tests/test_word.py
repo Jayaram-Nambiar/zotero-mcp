@@ -17,6 +17,7 @@ from zotero_mcp.word import (
     EmbeddedItem,
     chunk_property,
     citation_instruction,
+    citation_keys,
     document_preferences,
     embed_document,
     parse_marker_body,
@@ -35,6 +36,28 @@ def _sample_item(title: str = "Example & <Trial>") -> EmbeddedItem:
         },
         bibliography="Smith A. Example. Journal. 2020.",
     )
+
+
+_BODY_KEYS = [f"BODY{index:04d}" for index in range(40)]
+_CELL_KEYS = [f"CELL{index:04d}" for index in range(50)]
+_MANY_KEYS = _BODY_KEYS[:20] + _CELL_KEYS + _BODY_KEYS[20:]
+
+
+def _write_many_markers(path: Path) -> None:
+    """Save 20 marker paragraphs, a 10 x 5 table of markers, then 20 more paragraphs.
+
+    Dozens of markers, because a paragraph walk that remembers bare id()s starts
+    skipping only once earlier element proxies are freed and their ids reused.
+    """
+    document = Document()
+    for key in _BODY_KEYS[:20]:
+        document.add_paragraph("Claim {{zotero:" + key + "}}.")
+    table = document.add_table(rows=10, cols=5)
+    for index, key in enumerate(_CELL_KEYS):
+        table.cell(index // 5, index % 5).text = "{{zotero:" + key + "}}"
+    for key in _BODY_KEYS[20:]:
+        document.add_paragraph("Claim {{zotero:" + key + "}}.")
+    document.save(path)
 
 
 class WordFieldTests(unittest.TestCase):
@@ -97,6 +120,35 @@ class WordFieldTests(unittest.TestCase):
             self.assertEqual(preferences["prefs"]["noteType"], 0)
             self.assertTrue(preferences["style"]["hasBibliography"])
             self.assertNotIn("Local User", core)
+
+    def test_citation_keys_finds_every_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "draft.docx"
+            _write_many_markers(source)
+            self.assertEqual(citation_keys(source), _MANY_KEYS)
+
+    def test_embed_after_citation_keys_writes_every_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "draft.docx"
+            destination = root / "draft.zotero.docx"
+            _write_many_markers(source)
+            # embed_zotero_word_fields fetches items only for the keys citation_keys returns.
+            keys = citation_keys(source)
+            stats = embed_document(
+                source,
+                destination,
+                user_id="1",
+                style="vancouver",
+                locale="en-US",
+                items={key: _sample_item() for key in keys},
+                insert_bibliography=False,
+            )
+            with zipfile.ZipFile(destination) as package:
+                codes = _field_codes(package.read("word/document.xml"))
+        uris = [json.loads(code[code.index("{") : code.rindex("}") + 1])["citationItems"][0]["uris"][0] for code in codes]
+        self.assertEqual(stats.citation_count, 90)
+        self.assertEqual(uris, [f"http://zotero.org/users/1/items/{key}" for key in _MANY_KEYS])
 
     def test_embed_tool_requires_user_id(self) -> None:
         previous = os.environ.pop("ZOTERO_USER_ID", None)

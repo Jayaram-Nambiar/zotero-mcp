@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.1
+
+- `embed_zotero_word_fields` no longer fails with `No Zotero item was loaded for …` on documents with more than a few citation markers. The pass that collects item keys skipped marker paragraphs, so their items were never fetched.
+
 ## 1.0.0
 
 First public release.

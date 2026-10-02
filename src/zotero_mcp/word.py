@@ -24,6 +24,8 @@ from xml.etree import ElementTree
 from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.oxml.table import CT_Tc
+from docx.oxml.text.paragraph import CT_P
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 
@@ -288,23 +290,23 @@ def _bibliography_text(job: _Job) -> str:
 
 def iter_paragraphs(document: Document):
     """Yield body, table, header, and footer paragraphs once each."""
-    seen: set[int] = set()
+    # Hold the elements, not their id()s: lxml frees a proxy that nothing
+    # references, and a later proxy for a different element can reuse its id.
+    seen: set[CT_P] = set()
 
     def take(paragraph: Paragraph):
-        identity = id(paragraph._p)
-        if identity in seen:
+        if paragraph._p in seen:
             return None
-        seen.add(identity)
+        seen.add(paragraph._p)
         return paragraph
 
     def walk_table(table: Table):
-        seen_cells: set[int] = set()
+        seen_cells: set[CT_Tc] = set()
         for row in table.rows:
             for cell in row.cells:
-                identity = id(cell._tc)
-                if identity in seen_cells:
+                if cell._tc in seen_cells:
                     continue
-                seen_cells.add(identity)
+                seen_cells.add(cell._tc)
                 for paragraph in cell.paragraphs:
                     found = take(paragraph)
                     if found is not None:
