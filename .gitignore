@@ -9,6 +9,8 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .agent-context.json
+AGENTS.md
+CLAUDE.md
 *.egg-info/
 dist/
 build/
