@@ -1,221 +1,677 @@
 # zotero-mcp
 
-A [Model Context Protocol](https://modelcontextprotocol.io/) server for one person's Zotero library. It can search the library, call the [Zotero Web API v3](https://www.zotero.org/support/dev/web_api/v3/basics), upload attachment files, and write Microsoft Word fields that the [Zotero Word plugin](https://www.zotero.org/support/word_processor_plugin_usage) can refresh and restyle.
+[![Tests](https://github.com/Jayaram-Nambiar/zotero-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/Jayaram-Nambiar/zotero-mcp/actions/workflows/tests.yml)
+![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-Set it up once for every agent you use: install the `zotero-mcp` command, store your Zotero user ID and API key as user environment variables, and point each agent at that command. Agents start the server themselves and talk to it over standard input and output, so there is nothing to keep running in a terminal.
+zotero-mcp connects AI agents such as Claude, Cursor, VS Code, ChatGPT, and Codex to your [Zotero](https://www.zotero.org/) library through the [Model Context Protocol](https://modelcontextprotocol.io/) (MCP). Once it is set up, you can ask an agent to:
 
-## What you need
+- search your library and read item details, abstracts, and formatted references;
+- list collections and page through their items;
+- create, edit, tag, or delete items through the [Zotero Web API v3](https://www.zotero.org/support/dev/web_api/v3/basics);
+- upload PDFs and other files as attachments;
+- turn citation markers in a Word document into real Zotero citations that the [Zotero Word plugin](https://www.zotero.org/support/word_processor_plugin_usage) can refresh and restyle.
 
-- Windows, macOS, or Linux, with [uv](https://docs.astral.sh/uv/) or [pipx](https://pipx.pypa.io/) to install the server. The server needs Python 3.10 or newer; uv downloads one if none is installed.
-- The [Zotero desktop app](https://www.zotero.org/download/), for fast local reads.
-- A [zotero.org](https://www.zotero.org/user/register) account, its numeric user ID, and an API key.
-- For Word citations: Microsoft Word and the [Zotero word-processor plugin](https://www.zotero.org/support/word_processor_plugin_installation).
+You set it up once: install one command, store your Zotero user ID and API key once, and point every agent at that command.
 
-Reads try the desktop app at `http://127.0.0.1:23119/api` first. Zotero documents that local API as `localhost` port `23119`; this server uses `127.0.0.1` so an IPv6 localhost lookup does not stall. If the app is closed, or its library has no items yet, reads use `https://api.zotero.org`. Writes always use `api.zotero.org`, and Zotero syncs them back to the desktop app.
+## Contents
 
-## 1. Set up Zotero
+- [How it works](#how-it-works)
+- [Before you start](#before-you-start)
+- [Step 1: Set up Zotero](#step-1-set-up-zotero)
+- [Step 2: Store your user ID and API key](#step-2-store-your-user-id-and-api-key)
+- [Step 3: Install zotero-mcp](#step-3-install-zotero-mcp)
+- [Step 4: Connect your agents](#step-4-connect-your-agents)
+- [Step 5: Check that it works](#step-5-check-that-it-works)
+- [Use the tools](#use-the-tools)
+- [Create Word citations](#create-word-citations)
+- [Update, pin, or remove](#update-pin-or-remove)
+- [Troubleshooting](#troubleshooting)
+- [Security](#security)
+- [Contributing](#contributing)
 
-1. Install Zotero from the [download page](https://www.zotero.org/download/) and open it once.
-2. Create an account from [zotero.org/user/register](https://www.zotero.org/user/register) if you do not have one.
-3. In Zotero, sign in and let the library sync. Then open Settings and turn on the option that allows other applications on this computer to communicate with Zotero. Zotero describes this local API in the [Web API basics](https://www.zotero.org/support/dev/web_api/v3/basics).
-4. While logged in on the web, open [API key settings](https://www.zotero.org/settings/keys).
-5. Create a private key for this server. Give it access to your personal library. Turn on write access only if agents should be allowed to create, edit, upload, or delete records. The page shows the key once. Copy it then.
-6. On that same page, copy your **user ID**. It is a number. It is not your username.
+## How it works
 
-The user ID is required for Word. The plugin matches a citation to your library with a URI of the form `http://zotero.org/users/USERID/items/ITEMKEY`.
+```mermaid
+flowchart LR
+    agent["AI agent"] -- "MCP over standard input and output" --> server["zotero-mcp"]
+    server -- "reads" --> desktop["Zotero desktop app (local API)"]
+    server -- "reads when the app is closed, and every write" --> web["api.zotero.org"]
+    web -- "Zotero sync" --> desktop
+```
 
-To install the Word plugin, follow [Installing the Zotero word-processor plugin](https://www.zotero.org/support/word_processor_plugin_installation): in Zotero, open the Cite settings, install the Microsoft Word add-in, and restart Word. A Zotero tab should appear. [Using the plugin](https://www.zotero.org/support/word_processor_plugin_usage) explains Add/Edit Citation, Add/Edit Bibliography, Document Preferences, and Refresh.
+- Each agent starts `zotero-mcp` by itself whenever it needs it and talks to it over standard input and output. You never run the server by hand, and it opens no network port.
+- Reads go to the Zotero desktop app first, at `http://127.0.0.1:23119/api`. That is fast and works offline. If the app is closed, or its library has no items yet, reads use `https://api.zotero.org` instead. Writes always go to `api.zotero.org`, and Zotero syncs them back to the desktop app.
+- The server needs two values from you: your numeric Zotero user ID and a Zotero API key. You store them once, as environment variables, in Step 2.
 
-## 2. Store the user ID and API key
+## Before you start
 
-Store both values once, as user environment variables. Every agent can then reach them, and neither value has to be written into an agent's config file. Do not commit either value. [`.env.example`](.env.example) lists the names; the server does not load `.env` files.
+| You need | Notes |
+| --- | --- |
+| Windows, macOS, or Linux | Each step shows the commands for each system. |
+| The [Zotero desktop app](https://www.zotero.org/download/), version 7 or later | Step 1 turns on the setting this server uses. |
+| A [zotero.org account](https://www.zotero.org/user/register) | Needed for syncing and for the API key. |
+| An AI agent that supports MCP | Claude Desktop, Claude Code, Cursor, VS Code with GitHub Copilot, the ChatGPT desktop app or Codex, Google Antigravity, opencode, or [another MCP client](#other-mcp-clients). |
+| Git and uv | Step 3 installs them if you do not have them. |
+| Microsoft Word with the Zotero Word plugin | Only for [Word citations](#create-word-citations). Step 1 shows how to install the plugin. |
 
-Windows PowerShell:
+**Running commands.** Several steps use a terminal:
+
+- **Windows:** open **PowerShell**: press Start, type `PowerShell`, and press Enter.
+- **macOS:** open **Terminal** from Applications → Utilities.
+- **Linux:** open your terminal app.
+
+Copy one code block at a time, paste it into the terminal, and press Enter. Text that starts with `YOUR_`, such as `YOUR_USER_ID`, is a placeholder: replace all of it with your own value. Example paths that contain `you`, such as `C:\Users\you\...`, stand for paths on your computer; Step 3 prints yours.
+
+## Step 1: Set up Zotero
+
+1. **Install Zotero.** Download it from [zotero.org/download](https://www.zotero.org/download/), install it, and open it.
+2. **Sign in and sync.** Open Zotero's settings (**Edit → Settings** on Windows and Linux, **Zotero → Settings** on macOS), choose **Sync**, sign in with your zotero.org account, and let the library sync. If you have no account yet, create one at [zotero.org/user/register](https://www.zotero.org/user/register).
+3. **Turn on the local API.** In the same settings window, choose **Advanced** and select **Allow other applications on this computer to communicate with Zotero**. The server then reads your library from the desktop app, quickly and without the internet.
+4. **Create an API key.** Sign in at zotero.org and open [Create a new private key](https://www.zotero.org/settings/keys/new).
+   - Enter a name you will recognize, such as `zotero-mcp`.
+   - Under **Personal Library**, allow library access. Allow write access only if agents should be able to create, edit, upload, or delete items.
+   - Save the key and copy it right away. Zotero shows it only once.
+5. **Copy your user ID.** The [API keys page](https://www.zotero.org/settings/keys) shows your user ID for API calls. It is a number, not your username.
+6. **Optional: install the Word plugin.** For Word citations, open Zotero's settings, choose **Cite → Word Processor Plugins**, and install the Microsoft Word add-in. Restart Word; a **Zotero** tab appears. [Installing the word processor plugin](https://www.zotero.org/support/word_processor_plugin_installation) has more detail.
+
+Treat the API key like a password: it opens your library. Never paste it into a chat, an issue, a screenshot, or a file you share.
+
+## Step 2: Store your user ID and API key
+
+The server reads two environment variables:
+
+| Variable | Value |
+| --- | --- |
+| `ZOTERO_USER_ID` | The user ID you copied in Step 1 |
+| `ZOTERO_API_KEY` | The API key you created in Step 1 |
+
+Store them once for your user account, and every agent can find them. On Windows, the key never has to be pasted into an agent's settings. On macOS and Linux, a few apps need the values in their own config; Step 4 says which. The server does not read `.env` files; [`.env.example`](.env.example) only lists the names.
+
+### Windows
+
+1. Open PowerShell.
+2. Save your user ID. Replace `YOUR_USER_ID` with the number, and keep the quotation marks:
+
+   ```powershell
+   [Environment]::SetEnvironmentVariable("ZOTERO_USER_ID", "YOUR_USER_ID", "User")
+   ```
+
+3. Save your API key. This command asks for the key and hides it while you paste, so the key never appears on screen or in PowerShell's history. It is one long line; copy all of it:
+
+   ```powershell
+   $key = Read-Host "Paste your Zotero API key" -AsSecureString; [Environment]::SetEnvironmentVariable("ZOTERO_API_KEY", [System.Net.NetworkCredential]::new("", $key).Password, "User"); Remove-Variable key
+   ```
+
+4. Check both values. The first line prints your user ID; the second prints `True`:
+
+   ```powershell
+   [Environment]::GetEnvironmentVariable("ZOTERO_USER_ID", "User")
+   [bool][Environment]::GetEnvironmentVariable("ZOTERO_API_KEY", "User")
+   ```
+
+Prefer a window to commands? Press Start, type `environment variables`, open **Edit environment variables for your account**, and add both variables under **User variables**.
+
+On Windows, the server also reads these two variables directly from Windows whenever an agent does not pass them. They therefore work in every agent at once, including Claude Desktop and apps installed from the Microsoft Store, without restarting anything.
+
+### macOS and Linux
+
+Run steps 2 to 5 in the same terminal window.
+
+1. Open a terminal.
+2. Tell the next commands which startup file your shell reads. macOS uses zsh by default:
+
+   ```bash
+   RC=~/.zshrc
+   ```
+
+   Most Linux systems use bash:
+
+   ```bash
+   RC=~/.bashrc
+   ```
+
+   `echo $SHELL` shows your shell. If you use bash on macOS, run `RC=~/.bash_profile` instead.
+
+3. Save your user ID. Replace `YOUR_USER_ID` with the number:
+
+   ```bash
+   echo 'export ZOTERO_USER_ID="YOUR_USER_ID"' >> "$RC"
+   ```
+
+4. Save your API key. This command asks for the key without showing it, so the key never appears on screen or in your shell history. It is one long line; copy all of it:
+
+   ```bash
+   printf "Paste your Zotero API key: "; read -rs key; echo; echo "export ZOTERO_API_KEY=\"$key\"" >> "$RC"; unset key
+   ```
+
+5. Load the new values and check them. The second line prints your user ID; the third prints `API key is set`:
+
+   ```bash
+   source "$RC"
+   echo "$ZOTERO_USER_ID"
+   [ -n "$ZOTERO_API_KEY" ] && echo "API key is set"
+   ```
+
+Agents started from a new terminal see these values. Apps opened from the Dock or an application menu usually do not read your shell's startup file; Step 4 shows what to do for those agents.
+
+## Step 3: Install zotero-mcp
+
+### Install Git
+
+uv downloads zotero-mcp from GitHub with Git. Check whether Git is installed:
+
+```bash
+git --version
+```
+
+If that prints a version number, continue with [Install uv](#install-uv). Otherwise, install Git:
+
+| System | Command |
+| --- | --- |
+| Windows | `winget install --id Git.Git -e --source winget` |
+| macOS | `xcode-select --install` (installs Apple's command line tools, which include Git) |
+| Debian, Ubuntu | `sudo apt install git` |
+| Fedora | `sudo dnf install git` |
+
+Close the terminal, open a new one, and run `git --version` again.
+
+### Install uv
+
+[uv](https://docs.astral.sh/uv/) installs Python programs in their own environments, and downloads Python itself if needed. Check whether it is installed:
+
+```bash
+uv --version
+```
+
+If that does not print a version number, install uv.
+
+Windows (PowerShell):
 
 ```powershell
-[Environment]::SetEnvironmentVariable("ZOTERO_USER_ID", "YOUR_USER_ID", "User")
-[Environment]::SetEnvironmentVariable("ZOTERO_API_KEY", "YOUR_API_KEY", "User")
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-On Windows the server reads these variables itself whenever an agent does not pass them, so they take effect on the next request in every agent, with nothing to restart. That covers agents that withhold your variables from the servers they start, such as Claude Desktop, and Microsoft Store apps that still carry the environment from when you signed in.
-
-macOS and Linux, in `~/.zshrc` or `~/.bashrc`:
+macOS and Linux:
 
 ```bash
-export ZOTERO_USER_ID="YOUR_USER_ID"
-export ZOTERO_API_KEY="YOUR_API_KEY"
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-Agents started from a new terminal inherit these. Apps opened from the Dock or an application menu do not read shell profiles; for those, put the values in the agent's `env` block in step 4.
+Close the terminal, open a new one, and run `uv --version` again. The [uv installation guide](https://docs.astral.sh/uv/getting-started/installation/) lists other ways to install it, such as WinGet and Homebrew.
 
-## 3. Install
-
-Install the server in its own environment, so that changes to other Python tools cannot break it:
+### Install the server
 
 ```bash
-uv tool install "git+https://github.com/Jayaram-Nambiar/zotero-mcp.git"
+uv tool install git+https://github.com/Jayaram-Nambiar/zotero-mcp.git
 ```
 
-With pipx instead: `pipx install "git+https://github.com/Jayaram-Nambiar/zotero-mcp.git"`.
+The output includes `Installed 1 executable: zotero-mcp`. uv may then warn that its `bin` folder is not on your `PATH`; that is fine, because agents use the full path from the next step. Run `uv tool update-shell` only if you also want to type `zotero-mcp` in a terminal.
 
-Either one installs a `zotero-mcp` command. `uv tool list` (or `pipx list`) shows the installed version. Agents need the command's full path:
-
-| System | Full path |
-| --- | --- |
-| Windows | `%USERPROFILE%\.local\bin\zotero-mcp.exe`. `uv tool dir --bin` prints the folder. |
-| macOS, Linux | `~/.local/bin/zotero-mcp`. `uv tool dir --bin` prints the folder. |
-
-pipx uses the same folder by default; `pipx environment` shows it as `PIPX_BIN_DIR`.
-
-## 4. Connect your agents
-
-Add the server to each agent under the same name, `zotero`. The examples write the command as `zotero-mcp`. Replace it with the full path from step 3, because desktop apps do not always start with the `PATH` your terminal has:
-
-- JSON on Windows doubles each backslash: `"C:\\Users\\you\\.local\\bin\\zotero-mcp.exe"`.
-- TOML on Windows takes a literal string in single quotes: `'C:\Users\you\.local\bin\zotero-mcp.exe'`.
-- macOS and Linux: `"/Users/you/.local/bin/zotero-mcp"` or `"/home/you/.local/bin/zotero-mcp"`.
-
-After saving a config, reload the agent's MCP servers or restart the agent. The first successful `search_zotero` call confirms the setup.
-
-### Claude Code
+Check the installed version:
 
 ```bash
-claude mcp add --scope user --transport stdio zotero -- zotero-mcp
+uv tool list
 ```
 
-User scope makes the server available in every project, and `claude mcp get zotero` shows its status. Claude Code passes its environment to the server. Claude Code documents scopes in [Connect Claude Code to tools via MCP](https://code.claude.com/docs/en/mcp).
+It lists `zotero-mcp v1.0.2` or newer.
+
+### Copy the full path of the command
+
+Agents start the server by its full path. Print it.
+
+Windows (PowerShell):
+
+```powershell
+Join-Path (uv tool dir --bin) "zotero-mcp.exe"
+```
+
+This prints a path such as `C:\Users\you\.local\bin\zotero-mcp.exe`.
+
+macOS and Linux:
+
+```bash
+echo "$(uv tool dir --bin)/zotero-mcp"
+```
+
+This prints a path such as `/Users/you/.local/bin/zotero-mcp`. Keep the path at hand for Step 4.
+
+## Step 4: Connect your agents
+
+Add the server to every agent you use, always under the name `zotero`. Set up only the agents you have; skip the rest.
+
+### Paths in config files
+
+The examples write the command as `/path/to/zotero-mcp`. Replace it with the full path from Step 3, written for the kind of file you are editing:
+
+| Where the path goes | Windows | macOS |
+| --- | --- | --- |
+| A terminal command | `"C:\Users\you\.local\bin\zotero-mcp.exe"` | `/Users/you/.local/bin/zotero-mcp` |
+| A JSON file: double every backslash | `"C:\\Users\\you\\.local\\bin\\zotero-mcp.exe"` | `"/Users/you/.local/bin/zotero-mcp"` |
+| A TOML file: use single quotes on Windows | `'C:\Users\you\.local\bin\zotero-mcp.exe'` | `"/Users/you/.local/bin/zotero-mcp"` |
+
+On Linux, the path usually starts with `/home/you/` instead of `/Users/you/`.
+
+### Edit a JSON config file safely
+
+Most agents keep their servers in a JSON file, in a block named `mcpServers`; VS Code names the block `servers`, and opencode names it `mcp`. Each agent's section below gives the commands to open and to check its file. When you add `zotero`:
+
+1. **The file is empty or new:** paste the agent's whole example.
+2. **The file has other settings but no server block:** keep everything that is already there. Put a comma after the last setting, then paste the server block inside the outer braces:
+
+   ```json
+   {
+     "preferences": {
+       "example-setting": true
+     },
+     "mcpServers": {
+       "zotero": {
+         "command": "/path/to/zotero-mcp"
+       }
+     }
+   }
+   ```
+
+3. **The file already has a server block:** add only the `"zotero": { ... }` entry inside it, with a comma after the entry before it:
+
+   ```json
+   {
+     "mcpServers": {
+       "other-server": {
+         "command": "other-command"
+       },
+       "zotero": {
+         "command": "/path/to/zotero-mcp"
+       }
+     }
+   }
+   ```
+
+Paste the examples rather than typing them: some editors turn straight quotation marks into curly ones, which breaks JSON. After saving, run the agent's check command. If it reports an error, a comma, quotation mark, or brace is missing. If it says it cannot find the file, the path in the command is wrong, not the JSON.
 
 ### Claude Desktop
 
-Open **Settings → Developer → Edit Config**, or edit the file directly:
+Claude Desktop, the Claude chat app, reads this file:
 
 | System | File |
 | --- | --- |
 | Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
 | macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
 
-```json
-{
-  "mcpServers": {
-    "zotero": {
-      "command": "zotero-mcp"
-    }
-  }
-}
-```
+> [!IMPORTANT]
+> Quit Claude Desktop completely before you edit this file. Closing the window is not enough: Claude keeps running in the background and can save its own copy of the file over your change.
 
-Claude Desktop starts servers with system variables only, so it never passes yours. On Windows nothing more is needed, because the server reads the two variables itself. On macOS, add them to the entry and keep the file private:
+Claude can also show you the file: open its **Settings** from the Claude menu, choose **Developer**, and click **Edit Config**. Claude creates the file if it does not exist yet. Then quit Claude before you edit it.
 
-```json
-"env": {
-  "ZOTERO_USER_ID": "YOUR_USER_ID",
-  "ZOTERO_API_KEY": "YOUR_API_KEY"
-}
-```
+1. Quit Claude Desktop.
+   - **Windows:** right-click the Claude icon in the notification area at the right end of the taskbar (click **^** if the icon is hidden) and choose **Quit**.
+   - **macOS:** choose **Claude → Quit Claude** in the menu bar, or press ⌘Q.
+2. Open the file.
+
+   Windows (PowerShell). If Notepad asks whether to create the file, choose **Yes**:
+
+   ```powershell
+   notepad "$env:APPDATA\Claude\claude_desktop_config.json"
+   ```
+
+   macOS (Terminal):
+
+   ```bash
+   mkdir -p "$HOME/Library/Application Support/Claude"
+   touch "$HOME/Library/Application Support/Claude/claude_desktop_config.json"
+   open -e "$HOME/Library/Application Support/Claude/claude_desktop_config.json"
+   ```
+
+3. Add the server, following [Edit a JSON config file safely](#edit-a-json-config-file-safely).
+
+   Windows. Claude Desktop does not pass your variables to servers, but on Windows the server reads them from Windows itself, so the entry needs only the command:
+
+   ```json
+   {
+     "mcpServers": {
+       "zotero": {
+         "command": "C:\\Users\\you\\.local\\bin\\zotero-mcp.exe"
+       }
+     }
+   }
+   ```
+
+   macOS. The entry has to carry your two values, because Claude Desktop does not pass your variables to servers. Keep this file private:
+
+   ```json
+   {
+     "mcpServers": {
+       "zotero": {
+         "command": "/Users/you/.local/bin/zotero-mcp",
+         "env": {
+           "ZOTERO_USER_ID": "YOUR_USER_ID",
+           "ZOTERO_API_KEY": "YOUR_API_KEY"
+         }
+       }
+     }
+   }
+   ```
+
+4. Save the file and check it.
+
+   Windows (PowerShell):
+
+   ```powershell
+   Get-Content "$env:APPDATA\Claude\claude_desktop_config.json" -Raw | ConvertFrom-Json
+   ```
+
+   macOS (Terminal):
+
+   ```bash
+   python3 -m json.tool "$HOME/Library/Application Support/Claude/claude_desktop_config.json"
+   ```
+
+5. Close the editor and start Claude Desktop again.
+6. Check the connection: in a chat, click **+** (Add files, connectors, and more) at the bottom left of the message box, point to **Connectors**, choose **Manage connectors**, and select **zotero** to see its tools.
+
+### Claude Code
+
+Claude Code keeps its servers in its own settings, shared by the terminal, the Code tab of the Claude desktop app, and the IDE extensions.
+
+1. Open a terminal.
+2. Add the server for all your projects, with the full path from Step 3:
+
+   ```bash
+   claude mcp add --scope user --transport stdio zotero -- "/path/to/zotero-mcp"
+   ```
+
+   On Windows, for example:
+
+   ```powershell
+   claude mcp add --scope user --transport stdio zotero -- "C:\Users\you\.local\bin\zotero-mcp.exe"
+   ```
+
+3. Check the connection: `claude mcp get zotero` shows `Status: ✔ Connected`. Inside a Claude Code session, `/mcp` lists the connected servers.
+
+Claude Code passes its environment to the server, so the entry needs no `env` block.
 
 ### Cursor
 
-`~/.cursor/mcp.json` (`%USERPROFILE%\.cursor\mcp.json` on Windows) applies to every project; `.cursor/mcp.json` inside a project applies to that project only. Cursor documents both in [Model Context Protocol](https://cursor.com/docs/mcp).
+Cursor reads `~/.cursor/mcp.json` (`%USERPROFILE%\.cursor\mcp.json` on Windows) for every project, or `.cursor/mcp.json` inside a single project. See Cursor's [Model Context Protocol](https://cursor.com/docs/mcp) guide.
 
-```json
-{
-  "mcpServers": {
-    "zotero": {
-      "type": "stdio",
-      "command": "zotero-mcp",
-      "env": {
-        "ZOTERO_USER_ID": "${env:ZOTERO_USER_ID}",
-        "ZOTERO_API_KEY": "${env:ZOTERO_API_KEY}"
-      }
-    }
-  }
-}
-```
+1. Open the file.
 
-`${env:NAME}` copies each variable from Cursor's environment when the server starts, so the key is not stored in the file.
+   Windows (PowerShell):
+
+   ```powershell
+   New-Item -ItemType Directory -Force "$env:USERPROFILE\.cursor" | Out-Null; notepad "$env:USERPROFILE\.cursor\mcp.json"
+   ```
+
+   macOS (Terminal):
+
+   ```bash
+   mkdir -p ~/.cursor && touch ~/.cursor/mcp.json && open -e ~/.cursor/mcp.json
+   ```
+
+   Linux:
+
+   ```bash
+   mkdir -p ~/.cursor && nano ~/.cursor/mcp.json
+   ```
+
+2. Add the server:
+
+   ```json
+   {
+     "mcpServers": {
+       "zotero": {
+         "type": "stdio",
+         "command": "/path/to/zotero-mcp",
+         "env": {
+           "ZOTERO_USER_ID": "${env:ZOTERO_USER_ID}",
+           "ZOTERO_API_KEY": "${env:ZOTERO_API_KEY}"
+         }
+       }
+     }
+   }
+   ```
+
+   `${env:NAME}` copies each variable from Cursor's environment when the server starts, so the key is not stored in the file.
+
+3. Save the file and check it.
+
+   Windows (PowerShell):
+
+   ```powershell
+   Get-Content "$env:USERPROFILE\.cursor\mcp.json" -Raw | ConvertFrom-Json
+   ```
+
+   macOS and Linux:
+
+   ```bash
+   python3 -m json.tool ~/.cursor/mcp.json
+   ```
+
+4. Restart Cursor.
+5. Check the connection: **Customize** in Cursor's sidebar lists **zotero** with its tools and lets you turn it on or off. If it does not connect, open the Output panel (Ctrl+Shift+U, or ⌘⇧U on macOS) and choose **MCP Logs**.
+
+On macOS and Linux, `${env:...}` finds the values only if Cursor has them, which is usually the case only when you start Cursor from a terminal. If the server reports `Unconfigured`, replace the two `${env:...}` references with your values, and keep the file private.
 
 ### VS Code with GitHub Copilot
 
-Run **MCP: Open User Configuration** to add the server for every workspace, or use `.vscode/mcp.json` for one workspace. VS Code uses `servers`, not `mcpServers`; the [MCP configuration reference](https://code.visualstudio.com/docs/agents/reference/mcp-configuration) describes the format.
+1. Open the Command Palette (Ctrl+Shift+P, or ⌘⇧P on macOS) and run **MCP: Open User Configuration**.
+2. Add the server. VS Code uses `servers`, not `mcpServers`:
 
-```json
-{
-  "servers": {
-    "zotero": {
-      "type": "stdio",
-      "command": "zotero-mcp"
-    }
-  }
-}
-```
+   ```json
+   {
+     "servers": {
+       "zotero": {
+         "type": "stdio",
+         "command": "/path/to/zotero-mcp"
+       }
+     }
+   }
+   ```
 
-On macOS and Linux, start VS Code from a terminal that has the variables, or add an `env` object with the values and keep that file out of version control.
+3. Save the file. VS Code underlines any JSON error in the editor.
+4. Check the connection: run **MCP: List Servers**, choose **zotero**, and start it if it is not running.
 
-### Codex
+On macOS and Linux, if the server reports `Unconfigured`, add an `env` object with your two values to this entry, as in the macOS example for [Claude Desktop](#claude-desktop), and keep the file private. The [MCP configuration reference](https://code.visualstudio.com/docs/agents/reference/mcp-configuration) describes every field.
 
-The Codex app, CLI, and IDE extension read `~/.codex/config.toml` (`%USERPROFILE%\.codex\config.toml` on Windows). OpenAI documents the keys in the [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+### ChatGPT desktop app and Codex
+
+The ChatGPT desktop app, the Codex CLI, and the Codex IDE extension share `~/.codex/config.toml` (`%USERPROFILE%\.codex\config.toml` on Windows). See OpenAI's [MCP guide](https://learn.chatgpt.com/docs/extend/mcp).
+
+1. Open the file.
+
+   Windows (PowerShell):
+
+   ```powershell
+   New-Item -ItemType Directory -Force "$env:USERPROFILE\.codex" | Out-Null; notepad "$env:USERPROFILE\.codex\config.toml"
+   ```
+
+   macOS (Terminal):
+
+   ```bash
+   mkdir -p ~/.codex && touch ~/.codex/config.toml && open -e ~/.codex/config.toml
+   ```
+
+   Linux:
+
+   ```bash
+   mkdir -p ~/.codex && nano ~/.codex/config.toml
+   ```
+
+2. Add these lines at the end of the file:
+
+   ```toml
+   [mcp_servers.zotero]
+   command = "/path/to/zotero-mcp"
+   env_vars = ["ZOTERO_USER_ID", "ZOTERO_API_KEY"]
+   startup_timeout_sec = 30
+   ```
+
+   On Windows, write the path in single quotes, for example `command = 'C:\Users\you\.local\bin\zotero-mcp.exe'`.
+
+3. Save the file and restart the app, or start a new Codex session.
+4. Check the connection: in the Codex CLI, `codex mcp list` shows the server. In any of the apps, the check in [Step 5](#step-5-check-that-it-works) works too.
+
+`env_vars` forwards the two variables from the app's environment, so the key stays out of the file. On macOS and Linux, the app may not have the variables, for example when you start it from the Dock. If the server reports `Unconfigured`, add your values below the entry instead, and keep the file private:
 
 ```toml
-[mcp_servers.zotero]
-command = "zotero-mcp"
-env_vars = ["ZOTERO_USER_ID", "ZOTERO_API_KEY"]
-startup_timeout_sec = 30
+[mcp_servers.zotero.env]
+ZOTERO_USER_ID = "YOUR_USER_ID"
+ZOTERO_API_KEY = "YOUR_API_KEY"
 ```
 
-`env_vars` forwards the two variables from Codex's environment, so the key stays out of the file. From the CLI: `codex mcp add zotero -- zotero-mcp`. ChatGPT in a web browser cannot start a program on your computer.
+ChatGPT in a web browser cannot start programs on your computer, so it cannot use this server.
 
 ### Google Antigravity
 
-The global file is `~/.gemini/config/mcp_config.json` (`%USERPROFILE%\.gemini\config\mcp_config.json` on Windows). In the app, **Additional Options (…) → MCP Servers** lists the connected servers and their tools. Antigravity documents the format in [its MCP guide](https://antigravity.google/docs/mcp/).
+Antigravity reads `~/.gemini/config/mcp_config.json` (`%USERPROFILE%\.gemini\config\mcp_config.json` on Windows). See Antigravity's [MCP guide](https://antigravity.google/docs/mcp/).
 
-```json
-{
-  "mcpServers": {
-    "zotero": {
-      "command": "zotero-mcp"
-    }
-  }
-}
-```
+1. Open the file.
 
-Antigravity passes its environment to the server, so no `env` block is needed when it starts with the variables. Its config does not expand variable references; if Antigravity starts without the variables, as a macOS app opened from the Dock does, add an `env` object with the values.
+   Windows (PowerShell):
+
+   ```powershell
+   New-Item -ItemType Directory -Force "$env:USERPROFILE\.gemini\config" | Out-Null; notepad "$env:USERPROFILE\.gemini\config\mcp_config.json"
+   ```
+
+   macOS (Terminal):
+
+   ```bash
+   mkdir -p ~/.gemini/config && touch ~/.gemini/config/mcp_config.json && open -e ~/.gemini/config/mcp_config.json
+   ```
+
+   Linux:
+
+   ```bash
+   mkdir -p ~/.gemini/config && nano ~/.gemini/config/mcp_config.json
+   ```
+
+2. Add the server:
+
+   ```json
+   {
+     "mcpServers": {
+       "zotero": {
+         "command": "/path/to/zotero-mcp"
+       }
+     }
+   }
+   ```
+
+3. Save the file and check it.
+
+   Windows (PowerShell):
+
+   ```powershell
+   Get-Content "$env:USERPROFILE\.gemini\config\mcp_config.json" -Raw | ConvertFrom-Json
+   ```
+
+   macOS and Linux:
+
+   ```bash
+   python3 -m json.tool ~/.gemini/config/mcp_config.json
+   ```
+
+4. Restart Antigravity.
+5. Check the connection: **Additional Options (…) → MCP Servers** lists **zotero** and its tools.
+
+Antigravity passes its environment to the server, so the entry needs no `env` block. On macOS and Linux, if the server reports `Unconfigured`, add an `env` object with your two values, as in the macOS example for [Claude Desktop](#claude-desktop). Antigravity's config does not expand variable references, so write the values themselves, and keep the file private.
 
 ### opencode
 
-`~/.config/opencode/opencode.json`, or `opencode.jsonc` in the same folder. opencode documents local servers in [MCP servers](https://opencode.ai/docs/mcp-servers/).
+opencode reads `~/.config/opencode/opencode.json` (`%USERPROFILE%\.config\opencode\opencode.json` on Windows). If you already keep your settings in `opencode.jsonc` in the same folder, edit that file instead. See opencode's [MCP servers](https://opencode.ai/docs/mcp-servers/) guide.
 
-```json
-{
-  "mcp": {
-    "zotero": {
-      "type": "local",
-      "command": ["zotero-mcp"],
-      "enabled": true,
-      "environment": {
-        "ZOTERO_USER_ID": "{env:ZOTERO_USER_ID}",
-        "ZOTERO_API_KEY": "{env:ZOTERO_API_KEY}"
-      }
-    }
-  }
-}
-```
+1. Open the file.
 
-opencode replaces `{env:NAME}` with the variable's value when it loads the file.
+   Windows (PowerShell):
+
+   ```powershell
+   New-Item -ItemType Directory -Force "$env:USERPROFILE\.config\opencode" | Out-Null; notepad "$env:USERPROFILE\.config\opencode\opencode.json"
+   ```
+
+   macOS (Terminal):
+
+   ```bash
+   mkdir -p ~/.config/opencode && touch ~/.config/opencode/opencode.json && open -e ~/.config/opencode/opencode.json
+   ```
+
+   Linux:
+
+   ```bash
+   mkdir -p ~/.config/opencode && nano ~/.config/opencode/opencode.json
+   ```
+
+2. Add the server inside `mcp`:
+
+   ```json
+   {
+     "mcp": {
+       "zotero": {
+         "type": "local",
+         "command": ["/path/to/zotero-mcp"],
+         "enabled": true,
+         "environment": {
+           "ZOTERO_USER_ID": "{env:ZOTERO_USER_ID}",
+           "ZOTERO_API_KEY": "{env:ZOTERO_API_KEY}"
+         }
+       }
+     }
+   }
+   ```
+
+   opencode replaces `{env:NAME}` with the variable's value when it loads the file.
+
+3. Save the file and check it. (A `.jsonc` file that contains comments fails this check even when it is correct.)
+
+   Windows (PowerShell):
+
+   ```powershell
+   Get-Content "$env:USERPROFILE\.config\opencode\opencode.json" -Raw | ConvertFrom-Json
+   ```
+
+   macOS and Linux:
+
+   ```bash
+   python3 -m json.tool ~/.config/opencode/opencode.json
+   ```
+
+4. Restart opencode, then run the check in [Step 5](#step-5-check-that-it-works).
 
 ### Other MCP clients
 
-A client that can start a local server needs:
+Any client that can start a local MCP server needs these settings:
 
 | Setting | Value |
 | --- | --- |
+| Name | `zotero` |
 | Transport | stdio |
-| Command | The full path of `zotero-mcp` from step 3 |
+| Command | The full path from Step 3 |
 | Arguments | None |
-| Environment | `ZOTERO_USER_ID` and `ZOTERO_API_KEY`; optional on Windows |
+| Environment | `ZOTERO_USER_ID` and `ZOTERO_API_KEY`. Optional on Windows, where the server reads them itself. |
 
-The server does not open a network port. Perplexity's MCP documentation covers connecting other clients *to* Perplexity ([MCP server](https://docs.perplexity.ai/docs/getting-started/integrations/mcp-server)), not starting a local server from the Perplexity app.
+Perplexity's [MCP documentation](https://docs.perplexity.ai/docs/getting-started/integrations/mcp-server) covers connecting other clients *to* Perplexity, not starting a local server from the Perplexity app.
 
-## 5. Use the tools
+## Step 5: Check that it works
+
+1. Open a new chat in an agent you set up. In VS Code, use Copilot Chat in **Agent** mode.
+2. Ask: `Search my Zotero library for <a word from a title you know>.`
+3. If the agent asks for permission to use a Zotero tool, allow it.
+4. The agent calls `search_zotero` and lists matching items. Each comes with an eight-character item key, such as `ABCD1234`.
+
+If the agent does not list Zotero tools, or a tool reports `Unconfigured`, see [Troubleshooting](#troubleshooting).
+
+## Use the tools
+
+Ask in plain language; the agent picks the tool. Some examples:
+
+| You ask | The agent uses |
+| --- | --- |
+| "Find papers by Vaswani in my Zotero library." | `search_zotero` |
+| "List my Zotero collections." | `list_zotero_collections` |
+| "Show the items in my Thesis collection." | `list_zotero_collections`, then `list_zotero_items` |
+| "Give me the abstract of item ABCD1234." | `get_zotero_item` |
+| "Add the tag to-read to item ABCD1234." | `zotero_api` (needs a key with write access) |
+| "Attach C:\papers\smith2020.pdf to item ABCD1234." | `zotero_api` to create the attachment item, then `upload_zotero_file` |
+| "Turn the citation markers in C:\drafts\paper.docx into Zotero citations." | `embed_zotero_word_fields` |
 
 | Tool | What it does |
 | --- | --- |
@@ -227,95 +683,175 @@ The server does not open a network port. Perplexity's MCP documentation covers c
 | `upload_zotero_file` | Upload a file onto an attachment item that already exists. |
 | `embed_zotero_word_fields` | Replace citation markers in a `.docx` with Zotero Word fields. |
 
-Search results are one page. Call again with `start` set to the returned `next_start` until `next_start` is null. Item keys are eight letters or digits. Write requests are documented in [Write Requests](https://www.zotero.org/support/dev/web_api/v3/write_requests) and [File Uploads](https://www.zotero.org/support/dev/web_api/v3/file_upload).
+Search results and item lists come one page at a time. To get the next page, call again with `start` set to the returned `next_start`, until `next_start` is null; `list_zotero_collections` returns your collections in one result. Item keys are eight letters or digits. Zotero documents write requests in [Write Requests](https://www.zotero.org/support/dev/web_api/v3/write_requests) and [File Uploads](https://www.zotero.org/support/dev/web_api/v3/file_upload).
 
-The tools are also plain Python functions. In an environment where the package is installed (see [Development](#development)):
+The tools that take a file need its full path, such as `C:\drafts\paper.docx` on Windows or `/Users/you/Documents/paper.docx` on macOS. A path that starts with `~` is not expanded.
+
+The tools are also plain Python functions. Install the package into a Python environment (`python -m pip install git+https://github.com/Jayaram-Nambiar/zotero-mcp.git`), then:
 
 ```python
-from zotero_mcp.server import embed_zotero_word_fields, search_zotero
+from zotero_mcp.server import search_zotero
 
 page = search_zotero("vaswani attention")
-print(page.matches[0].item_key)
-print(embed_zotero_word_fields(r"C:\drafts\paper.docx"))
+for match in page.matches:
+    print(match.item_key, match.title)
 ```
 
-## 6. Word citations the plugin can edit
+## Create Word citations
 
-Plain text such as `(Smith, 2020)` or a pasted Vancouver line is not a Zotero citation. The plugin reads a Word field. Zotero explains that storage in [Why do I see ADDIN ZOTERO_ITEM CSL_CITATION?](https://www.zotero.org/support/kb/word_field_codes).
+Plain text such as `(Smith, 2020)` or a pasted reference is not a Zotero citation: the Word plugin works with Word fields. Zotero explains how it stores them in [Why do I see ADDIN ZOTERO_ITEM CSL_CITATION?](https://www.zotero.org/support/kb/word_field_codes). This server writes those fields for you from simple markers.
 
-Put markers in the document while it is being written:
+1. **Find the item keys.** Ask your agent, for example: `Search my Zotero library for "Attention is all you need" and give me the item key.`
+2. **Write markers in your document** where each citation belongs, and one marker where the bibliography belongs:
 
-```text
-{{zotero:ABCD1234}}
-{{zotero:ABCD1234+EFGH5678}}
-{{zotero:ABCD1234|locator=12|label=page}}
-{{zotero:ABCD1234|prefix=see|suffix=.}}
-{{zotero:bibliography}}
-```
+   ```text
+   {{zotero:ABCD1234}}
+   {{zotero:ABCD1234+EFGH5678}}
+   {{zotero:ABCD1234|locator=12|label=page}}
+   {{zotero:ABCD1234|prefix=see|suffix=.}}
+   {{zotero:ABCD1234|suppress-author=true}}
+   {{zotero:bibliography}}
+   ```
 
-`ABCD1234` is the item key from `search_zotero`. A plus sign joins items into one citation cluster. `label` defaults to `page`. A suffix is appended as written. `{{zotero:bibliography}}` is the reference list.
+   - `ABCD1234` is an item key. A plus sign joins several items into one citation.
+   - `locator` adds a page or other location. `label` names it and defaults to `page`; other CSL labels include `chapter`, `figure`, `paragraph`, and `volume`.
+   - `prefix` adds text before the citation, and `suffix` adds text right after it. Spaces at the start and end of an option's value are ignored.
+   - `suppress-author=true` leaves the author's name out of the citation.
+   - `{{zotero:bibliography}}` marks where the reference list goes.
+   - Spaces are allowed just inside the braces, as in `{{ zotero:ABCD1234 }}`. Write `zotero` in lowercase, directly followed by a colon. A marker that does not follow this pattern stays in the document as plain text.
 
-Optional `suppress-author` is `true` or `false`. Locator labels follow CSL: `page`, `chapter`, `figure`, `paragraph`, `volume`, and the other terms accepted by the tool. Spaces around the marker are allowed. The word `zotero` stays lowercase.
+3. **Save the document as `.docx`.**
+4. **Ask the agent to convert it**, with the document's full path, for example: `Turn the citation markers in C:\drafts\paper.docx into Zotero citations using the apa style.` The agent calls `embed_zotero_word_fields`, which writes a new file, `paper.zotero.docx`, next to the original, and reports how many citations it wrote. If that number is smaller than the number of citation markers, a marker was mistyped and left as plain text.
+5. **Open the new file in Word**, go to the **Zotero** tab, and choose **Refresh**. Refresh formats every citation and the bibliography in the chosen style. Until then, the citations show a readable stand-in, such as `1` or `(Smith, 2020)`.
+6. **Change the style later** with **Zotero → Document Preferences**.
 
-Then ask the agent to call `embed_zotero_word_fields`, or run:
+`style` is a [Zotero style name](https://www.zotero.org/styles) such as `vancouver` (the default) or `apa`, or a full `https://www.zotero.org/styles/...` URL. `locale` defaults to `en-US`. From Python:
 
 ```python
-from docx import Document
 from zotero_mcp.server import embed_zotero_word_fields
 
-document = Document()
-document.add_paragraph("Attention is all you need {{zotero:ABCD1234}}.")
-document.add_paragraph("{{zotero:bibliography}}")
-document.save("draft.docx")
-
-print(embed_zotero_word_fields("draft.docx", style="vancouver"))
+print(embed_zotero_word_fields(r"C:\drafts\paper.docx", style="apa"))
 ```
 
-The default output is `draft.zotero.docx` next to the original. The original is left in place. `style` is a [Zotero style name](https://www.zotero.org/styles) such as `vancouver` or `apa`, or a full `https://www.zotero.org/styles/...` URL. `locale` defaults to `en-US`.
+What to know before you convert:
 
-Open the new file in Word and choose **Zotero → Refresh**. Document Preferences can change the citation style after that. The numbers you see before Refresh are a readable stand-in; Refresh rewrites them from the style.
+- **A paragraph that contains a marker is rebuilt from its plain text plus the new citation fields.** Everything else in that paragraph is lost:
+  - formatting such as bold and italics;
+  - hyperlinks (their text stays);
+  - images, footnote and endnote references, and comments;
+  - tracked changes and the text inside them;
+  - content controls;
+  - other fields. A citation inserted earlier with the Zotero plugin becomes plain text.
 
-The writer covers body paragraphs, table cells, and each section's main header and footer. It does not scan footnotes, text boxes, or first-page and even-page headers. A paragraph that contains a marker is rewritten as ordinary runs plus fields, so mixed bold or italic in that paragraph is not kept. The fields are in-text Word fields. LibreOffice stores Zotero citations as reference marks, which this writer does not emit.
+  Accept or reject tracked changes first, and put markers in plain paragraphs of text.
+- **Markers are found in body paragraphs, table cells, and each section's main header and footer.** Footnotes, text boxes, and first-page or even-page headers are not scanned.
+- **The fields are Word fields.** LibreOffice stores Zotero citations as reference marks, which this server does not write.
+- **Citations link to your personal library through your user ID.** `zotero_api` can still reach a group library with a `groups/GROUPID/...` path. A collaborator on another Zotero account sees the embedded citation data and can restyle it, but Refresh updates the live item data only for the account that owns the user ID.
 
-Citation clusters are linked to your personal library. `zotero_api` can still address a group library with a `groups/GROUPID/...` path. A collaborator on another Zotero account will see the embedded citation data and can restyle it; Refresh updates the live item only for the account that owns the user ID in the URI.
+## Update, pin, or remove
 
-## Update or remove
+### Update
 
-Update to the latest version on GitHub:
+1. Update to the newest version on GitHub:
+
+   ```bash
+   uv tool upgrade zotero-mcp
+   ```
+
+   This installs the newest commit on the `main` branch. To stay on a specific release instead, [pin a version](#pin-a-version).
+
+2. Restart your agents so that they start the new version. Quit Claude Desktop from the notification area or menu bar, as in [Claude Desktop](#claude-desktop).
+3. Run `uv tool list` to see the installed version.
+
+On Windows, a running server keeps its files open. If the upgrade stops with `Failed to install entrypoint` or `being used by another process`, quit every agent, then install again:
 
 ```bash
-uv tool upgrade zotero-mcp
+uv tool install --force git+https://github.com/Jayaram-Nambiar/zotero-mcp.git
 ```
 
-With pipx: `pipx upgrade zotero-mcp`. Then restart each agent, or reload its MCP servers, so that it starts the new version. On Windows a running server keeps its files open; if the upgrade reports a file in use, quit your agents and run it again.
+### Pin a version
 
-To remove the server, run `uv tool uninstall zotero-mcp` (or `pipx uninstall zotero-mcp`) and delete the `zotero` entry from each agent's config.
+Each release has a tag, such as `v1.0.2`; [CHANGELOG.md](CHANGELOG.md) lists them. To install one release and stay on it:
 
-Keep a single installation. Agents that point at different copies run different versions.
+```bash
+uv tool install --force git+https://github.com/Jayaram-Nambiar/zotero-mcp.git@v1.0.2
+```
+
+`uv tool upgrade` leaves a pinned version alone. To move to another release, run the same command with that release's tag. To follow the newest version again, run the install command from Step 3 with `--force`.
+
+### Remove
+
+1. Uninstall the server:
+
+   ```bash
+   uv tool uninstall zotero-mcp
+   ```
+
+2. Delete the `zotero` entry from each agent's config file from Step 4, and run that agent's check command afterwards. Quit Claude Desktop before you edit its file. For Claude Code, run `claude mcp remove zotero -s user`.
+3. Optional: delete the two variables.
+
+   Windows (PowerShell):
+
+   ```powershell
+   [Environment]::SetEnvironmentVariable("ZOTERO_USER_ID", $null, "User")
+   [Environment]::SetEnvironmentVariable("ZOTERO_API_KEY", $null, "User")
+   ```
+
+   macOS and Linux: delete the two `export ZOTERO_...` lines from your shell's startup file, such as `~/.zshrc` or `~/.bashrc`.
+
+4. Optional: revoke the API key on the [API keys page](https://www.zotero.org/settings/keys).
+
+Keep a single installation of the server. Agents that point at different copies run different versions.
 
 ## Troubleshooting
 
-| What you see | What to do |
+| Problem | What to do |
 | --- | --- |
-| `Unconfigured` | The server found no usable user ID or API key. Set them as in step 2. On Windows the next request picks them up. Elsewhere, restart the agent, or put the values in its `env` block. |
-| The agent cannot start the server | Use the full path of `zotero-mcp` from step 3 as the command. |
-| An agent runs an older version | Run `uv tool list`, remove any other copy of the server, point every agent at the same command, and restart the agent. |
-| Search is empty while the website shows items | The desktop library has other items, and this key is not in it. Sync Zotero. A missing local record is not fetched from the website, because the local library is the copy being edited. |
-| Word shows `ADDIN ZOTERO_ITEM` | Field codes are visible. Press Alt+F9 (Option-Fn-F9 on a Mac), or follow the [field-code article](https://www.zotero.org/support/kb/word_field_codes). |
-| Zotero asks you to pick a style | The document has no `ZOTERO_PREF_*` properties. Run `embed_zotero_word_fields` again. |
-| Refresh does not update a title you edited in Zotero | The user ID in the field does not match the account signed in to the desktop app, or the item key is not in that library. |
+| The agent does not list Zotero tools | Check that the command is the full path from Step 3, that the config file passes its check command, and that the agent was restarted. Quit Claude Desktop from the notification area or menu bar; closing its window does not restart it. |
+| Claude Desktop loses the `zotero` entry | Claude Desktop was running while the file was edited and saved its own copy over the change. Quit it completely, edit the file again, then start it. |
+| A tool reports `Unconfigured` | The server found no usable user ID or API key. Repeat Step 2. On Windows the next request picks the values up. On macOS and Linux, restart the agent, or put the values in its config as its section in Step 4 describes. |
+| Requests fail after you replaced the API key | Store the new key as in Step 2, update any config file that holds the key itself, and restart your agents. A value an agent passes takes precedence over the stored one. |
+| `uv` or `git` is not recognized after installing it | Close the terminal and open a new one. |
+| The install fails with `Git executable not found` | Install Git, as in [Install Git](#install-git), then open a new terminal and repeat the install. |
+| The upgrade fails with `Failed to install entrypoint` | An agent is still running the old version. Quit every agent, then run `uv tool install --force git+https://github.com/Jayaram-Nambiar/zotero-mcp.git`. |
+| An agent seems to run an older version | Run `uv tool list`. Remove any other copy of the server, point every agent at the full path from Step 3, and restart the agent. |
+| Reads are slow, or say the local Zotero app is not answering | Start the Zotero desktop app and turn on its local API (Step 1). Until then, reads use zotero.org. |
+| Search finds nothing, but the website shows the item | The desktop app has a library that does not contain the item yet. Sync Zotero. The server does not fall back to the website for an item that the desktop library is missing, because the desktop library is the copy you are editing. |
+| `zotero_api` returns HTTP 403 | The API key does not allow that request. Create a key with the permission it needs, such as write access, and store it as in Step 2. |
+| Converting a Word document fails on Windows | Word locks open files. Close the converted document, such as `paper.zotero.docx`, in Word, then convert again. |
+| On macOS, the agent cannot read a document in Documents or Desktop | Allow the agent's access to that folder when macOS asks, or turn it on in System Settings → Privacy & Security → Files and Folders. |
+| Word shows `ADDIN ZOTERO_ITEM` text | Word is showing field codes. Press Alt+F9 (Option+Fn+F9 on a Mac), or see the [field-code article](https://www.zotero.org/support/kb/word_field_codes). |
+| Zotero asks you to choose a citation style | The document has no Zotero document preferences. Run `embed_zotero_word_fields` again on the original document. |
+| Refresh does not pick up a title you changed in Zotero | The user ID in the citations does not match the account signed in to the desktop app, or the item is not in that library. |
 
-## Development
+### Connection status and logs
 
-```bash
-git clone https://github.com/Jayaram-Nambiar/zotero-mcp.git
-cd zotero-mcp
-python -m venv .venv
-.venv/Scripts/python -m pip install -e .
-.venv/Scripts/python -m unittest discover -s tests
-```
+| Agent | Where to look |
+| --- | --- |
+| Claude Desktop | The log file `%APPDATA%\Claude\logs\mcp-server-zotero.log` on Windows, or `~/Library/Logs/Claude/mcp-server-zotero.log` on macOS |
+| Claude Code | `claude mcp get zotero` for the status; `/mcp` inside a session |
+| Cursor | Output panel → **MCP Logs** |
+| VS Code | **MCP: List Servers** → **zotero** → **Show Output** |
+| Other agents | The agent's own MCP settings or documentation |
 
-On macOS and Linux the interpreter is `.venv/bin/python`. The tests run offline. Agents keep running the copy installed in step 3, so upgrade it after a change reaches GitHub. [CONTRIBUTING.md](CONTRIBUTING.md) lists the rules for changes.
+For more detail, add `LOG_LEVEL` with the value `DEBUG` to the server's environment in the agent's config. The server writes its log to standard error, never to the protocol stream.
+
+### Ask for help
+
+[Open an issue](https://github.com/Jayaram-Nambiar/zotero-mcp/issues) with your operating system, the agent, the output of `uv tool list`, and the exact error message. Never include your API key, and write `YOUR_USER_ID` in place of your user ID, which also appears in logs.
+
+## Security
+
+- The API key is the key to your library. Use a key with only the access agents need, and leave write access off unless they must change your library.
+- Prefer environment variables and config references (`${env:...}`, `env_vars`, `{env:...}`) over pasting the key into config files. Keep any file that holds the key itself private.
+- The server sends the key only to `api.zotero.org`, as a request header. It never returns the key in a tool result and removes it from error messages.
+- If the key leaks, revoke it on the [API keys page](https://www.zotero.org/settings/keys), create a new one, store it as in Step 2, and update any config file that holds the old key.
+
+[SECURITY.md](SECURITY.md) explains how to report a vulnerability and lists the server's safeguards.
+
+## Contributing
+
+Bug reports and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) explains how to set up a development environment, run the tests, and prepare a change. The test suite runs automatically on Windows, macOS, and Linux for every push to `main` and every pull request.
 
 ## Acknowledgements
 
@@ -328,7 +864,7 @@ On macOS and Linux the interpreter is `.venv/bin/python`. The tests run offline.
 
 This project is not affiliated with, endorsed by, or supported by Zotero or the Corporation for Digital Scholarship. Zotero is a trademark of the Corporation for Digital Scholarship. Use of the Zotero API is subject to Zotero's own terms and documentation. You are responsible for the API key you create and for the library changes an agent makes with it.
 
-The Word fields follow the field format Zotero documents and that its Word plugin reads. Refresh the document in Word before you rely on the citation style.
+The Word fields follow the field format that Zotero documents and that its Word plugin reads. Refresh the document in Word before you rely on the citation style.
 
 ## License
 
