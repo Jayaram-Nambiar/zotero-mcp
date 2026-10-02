@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zotero-mcp"
+version = "1.0.0"
+description = "Model Context Protocol server for a personal Zotero library, including Word citation fields."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Jayaram Nambiar" }]
+keywords = ["zotero", "mcp", "citations", "word"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Text Processing :: Markup",
+]
+dependencies = [
+    "mcp>=2.0,<3",
+    "pydantic>=2",
+    "python-docx>=1.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/Jayaram-Nambiar/zotero-mcp"
+Documentation = "https://www.zotero.org/support/dev/web_api/v3/basics"
+Issues = "https://github.com/Jayaram-Nambiar/zotero-mcp/issues"
+
+[project.scripts]
+zotero-mcp = "zotero_mcp.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
