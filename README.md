@@ -203,8 +203,10 @@ Close the terminal, open a new one, and run `uv --version` again. The [uv instal
 ### Install the server
 
 ```bash
-uv tool install git+https://github.com/Jayaram-Nambiar/zotero-mcp.git
+uv tool install --python 3.12 --compile-bytecode git+https://github.com/Jayaram-Nambiar/zotero-mcp.git
 ```
+
+`--python 3.12` and `--compile-bytecode` make the server start in a second or two. Some agents, Claude Code among them, give up on a server that takes longer to answer its first request, and with newer Python versions the first start can take several seconds.
 
 The output includes `Installed 1 executable: zotero-mcp`. uv may then warn that its `bin` folder is not on your `PATH`; that is fine, because agents use the full path from the next step. Run `uv tool update-shell` only if you also want to type `zotero-mcp` in a terminal.
 
@@ -976,7 +978,7 @@ What to know before you convert:
 On Windows, a running server keeps its files open. If the upgrade stops with `Failed to install entrypoint` or `being used by another process`, quit every agent, then install again:
 
 ```bash
-uv tool install --force git+https://github.com/Jayaram-Nambiar/zotero-mcp.git
+uv tool install --force --python 3.12 --compile-bytecode git+https://github.com/Jayaram-Nambiar/zotero-mcp.git
 ```
 
 ### Pin a version
@@ -984,7 +986,7 @@ uv tool install --force git+https://github.com/Jayaram-Nambiar/zotero-mcp.git
 Each release has a tag, such as `v1.1.0`; [CHANGELOG.md](CHANGELOG.md) lists them. To install one release and stay on it:
 
 ```bash
-uv tool install --force git+https://github.com/Jayaram-Nambiar/zotero-mcp.git@v1.1.0
+uv tool install --force --python 3.12 --compile-bytecode git+https://github.com/Jayaram-Nambiar/zotero-mcp.git@v1.1.0
 ```
 
 `uv tool upgrade` leaves a pinned version alone. To move to another release, run the same command with that release's tag. To follow the newest version again, run the install command from Step 3 with `--force`.
@@ -1019,12 +1021,13 @@ Keep a single installation of the server. Agents that point at different copies 
 | --- | --- |
 | The agent does not list Zotero tools | Check that the command is the full path from Step 3, that the config file passes its check command, and that the agent was restarted. Quit Claude Desktop from the notification area or menu bar; closing its window does not restart it. |
 | Claude Desktop loses the `zotero` entry | Claude Desktop was running while the file was edited and saved its own copy over the change. Quit it completely, edit the file again, then start it. |
+| Claude Code reports `Failed to connect`, and its MCP log says the initialize handshake is not accepted | The server started too slowly for Claude Code's first request. Quit every agent, then reinstall with the `--force` command from [Update](#update), which uses Python 3.12 and compiled bytecode. |
 | An agent reports a startup timeout, or the Zotero tools appear only after a while | The server's first start after you sign in can take 10 seconds or more. Try again, or give the agent more time: `startup_timeout_sec` and `mcp_optional_startup_grace_ms` for [Codex](#chatgpt-desktop-app-and-codex), `timeout` for [opencode](#opencode). |
 | A tool reports `Unconfigured` | The server found no usable user ID or API key. Repeat Step 2. On Windows the next request picks the values up. On macOS and Linux, restart the agent, or put the values in its config as its section in Step 4 describes; Claude Desktop, GitHub Copilot CLI, Gemini CLI, and Cline always need them there. |
 | Requests fail after you replaced the API key | Store the new key as in Step 2, update any config file that holds the key itself, and restart your agents. A value an agent passes takes precedence over the stored one. |
 | `uv` or `git` is not recognized after installing it | Close the terminal and open a new one. |
 | The install fails with `Git executable not found` | Install Git, as in [Install Git](#install-git), then open a new terminal and repeat the install. |
-| The upgrade fails with `Failed to install entrypoint` | An agent is still running the old version. Quit every agent, then run `uv tool install --force git+https://github.com/Jayaram-Nambiar/zotero-mcp.git`. |
+| The upgrade fails with `Failed to install entrypoint` | An agent is still running the old version. Quit every agent, then run the install command from [Update](#update) that uses `--force`. |
 | An agent seems to run an older version | Run `uv tool list`. Remove any other copy of the server, point every agent at the full path from Step 3, and restart the agent. |
 | Reads are slow, or say the local Zotero app is not answering | Start the Zotero desktop app and turn on its local API (Step 1). Until then, reads use zotero.org. |
 | Search finds nothing, but the website shows the item | The desktop app has a library that does not contain the item yet. Sync Zotero. The server does not fall back to the website for an item that the desktop library is missing, because the desktop library is the copy you are editing. |

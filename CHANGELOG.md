@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Changed
+
+- The install, update, and pin commands use `--python 3.12 --compile-bytecode`. A server installed on Python 3.14 without compiled bytecode can take several seconds to start, and Claude Code then fails to connect.
+
 ## [1.1.0] - 2026-10-03
 
 ### Added
