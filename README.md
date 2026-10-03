@@ -4,7 +4,7 @@
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-zotero-mcp connects AI agents such as Claude, Cursor, VS Code, ChatGPT, and Codex to your [Zotero](https://www.zotero.org/) library through the [Model Context Protocol](https://modelcontextprotocol.io/) (MCP). Once it is set up, you can ask an agent to:
+zotero-mcp connects AI agents such as Claude, ChatGPT and Codex, Cursor, GitHub Copilot, and Gemini CLI to your [Zotero](https://www.zotero.org/) library through the [Model Context Protocol](https://modelcontextprotocol.io/) (MCP). Once it is set up, you can ask an agent to:
 
 - search your library and read item details, abstracts, and formatted references;
 - list collections and page through their items;
@@ -51,7 +51,7 @@ flowchart LR
 | Windows, macOS, or Linux | Each step shows the commands for each system. |
 | The [Zotero desktop app](https://www.zotero.org/download/), version 7 or later | Step 1 turns on the setting this server uses. |
 | A [zotero.org account](https://www.zotero.org/user/register) | Needed for syncing and for the API key. |
-| An AI agent that supports MCP | Claude Desktop, Claude Code, Cursor, VS Code with GitHub Copilot, the ChatGPT desktop app or Codex, Google Antigravity, opencode, or [another MCP client](#other-mcp-clients). |
+| An AI agent that supports MCP | Claude Desktop, Claude Code, Cursor, VS Code with GitHub Copilot, GitHub Copilot CLI, the ChatGPT desktop app or Codex, Gemini CLI, Google Antigravity, opencode, Cline, Zed, or [another agent](#other-agents). |
 | Git and uv | Step 3 installs them if you do not have them. |
 | Microsoft Word with the Zotero Word plugin | Only for [Word citations](#create-word-citations). Step 1 shows how to install the plugin. |
 
@@ -112,7 +112,7 @@ Store them once for your user account, and every agent can find them. On Windows
 
 Prefer a window to commands? Press Start, type `environment variables`, open **Edit environment variables for your account**, and add both variables under **User variables**.
 
-On Windows, the server also reads these two variables directly from Windows whenever an agent does not pass them. They therefore work in every agent at once, including Claude Desktop and apps installed from the Microsoft Store, without restarting anything.
+On Windows, the server also reads these two variables directly from Windows whenever an agent does not pass them, or passes something that is not a user ID or key. They therefore work in every agent at once, including Claude Desktop and apps installed from the Microsoft Store, without restarting anything.
 
 ### macOS and Linux
 
@@ -153,7 +153,7 @@ Run steps 2 to 5 in the same terminal window.
    [ -n "$ZOTERO_API_KEY" ] && echo "API key is set"
    ```
 
-Agents started from a new terminal see these values. Apps opened from the Dock or an application menu usually do not read your shell's startup file; Step 4 shows what to do for those agents.
+Agents started from a new terminal see these values. VS Code and Cursor see them too, because they read your shell's startup file even when you open them from the Dock or an application menu. Most other apps opened that way do not; Step 4 shows what to do for each agent.
 
 ## Step 3: Install zotero-mcp
 
@@ -214,7 +214,7 @@ Check the installed version:
 uv tool list
 ```
 
-It lists `zotero-mcp v1.0.2` or newer.
+It lists `zotero-mcp v1.1.0` or newer.
 
 ### Copy the full path of the command
 
@@ -239,6 +239,8 @@ This prints a path such as `/Users/you/.local/bin/zotero-mcp`. Keep the path at 
 ## Step 4: Connect your agents
 
 Add the server to every agent you use, always under the name `zotero`. Set up only the agents you have; skip the rest.
+
+Jump to your agent: [Claude Desktop](#claude-desktop) · [Claude Code](#claude-code) · [Cursor](#cursor) · [VS Code](#vs-code-with-github-copilot) · [GitHub Copilot CLI](#github-copilot-cli) · [ChatGPT and Codex](#chatgpt-desktop-app-and-codex) · [Gemini CLI](#gemini-cli) · [Antigravity](#google-antigravity) · [opencode](#opencode) · [Cline](#cline) · [Zed](#zed) · [other agents](#other-agents)
 
 ### Paths in config files
 
@@ -288,6 +290,11 @@ Most agents keep their servers in a JSON file, in a block named `mcpServers`; VS
    ```
 
 Paste the examples rather than typing them: some editors turn straight quotation marks into curly ones, which breaks JSON. After saving, run the agent's check command. If it reports an error, a comma, quotation mark, or brace is missing. If it says it cannot find the file, the path in the command is wrong, not the JSON.
+
+### Your user ID and key in agent configs
+
+- **Windows:** no agent needs the two values in its config. Whenever an agent does not pass them, the server reads them from your Windows user environment, where Step 2 stored them.
+- **macOS and Linux:** the server can use only the values the agent passes to it. Some agents pass your shell's variables; others pass only a few, or none. Each agent's section below says which, and how to add the values to its config when they are needed. Where an agent can refer to a variable, such as `${env:ZOTERO_API_KEY}` in Cursor, use the reference rather than the key itself. Keep any file that holds the key itself private.
 
 ### Claude Desktop
 
@@ -386,9 +393,11 @@ Claude Code keeps its servers in its own settings, shared by the terminal, the C
    claude mcp add --scope user --transport stdio zotero -- "C:\Users\you\.local\bin\zotero-mcp.exe"
    ```
 
-3. Check the connection: `claude mcp get zotero` shows `Status: ✔ Connected`. Inside a Claude Code session, `/mcp` lists the connected servers.
+3. Check the connection: `claude mcp get zotero` shows `Status: ✔ Connected`. If it reports that the server failed to connect, run it once more: the first start after installing or signing in can take several seconds. Inside a Claude Code session, `/mcp` lists the connected servers.
 
 Claude Code passes its environment to the server, so the entry needs no `env` block.
+
+The **Code** tab of the Claude desktop app reads this entry too. If you also set up [Claude Desktop](#claude-desktop), the Code tab uses that `zotero` entry instead. On macOS, the desktop app does not read the variables in your shell's startup file when you open it from the Dock. If `zotero` reports `Unconfigured` in the Code tab, add `ZOTERO_USER_ID` and `ZOTERO_API_KEY` in its local environment editor: in the prompt box, open the environment menu, point to **Local**, and click the gear icon. It stores the values encrypted.
 
 ### Cursor
 
@@ -450,7 +459,7 @@ Cursor reads `~/.cursor/mcp.json` (`%USERPROFILE%\.cursor\mcp.json` on Windows) 
 4. Restart Cursor.
 5. Check the connection: **Customize** in Cursor's sidebar lists **zotero** with its tools and lets you turn it on or off. If it does not connect, open the Output panel (Ctrl+Shift+U, or ⌘⇧U on macOS) and choose **MCP Logs**.
 
-On macOS and Linux, `${env:...}` finds the values only if Cursor has them, which is usually the case only when you start Cursor from a terminal. If the server reports `Unconfigured`, replace the two `${env:...}` references with your values, and keep the file private.
+On macOS and Linux, Cursor reads your shell's startup file even when you open it from the Dock or an application menu, so `${env:...}` finds the values from Step 2. If the server still reports `Unconfigured`, replace the two `${env:...}` references with your values, and keep the file private.
 
 ### VS Code with GitHub Copilot
 
@@ -469,9 +478,89 @@ On macOS and Linux, `${env:...}` finds the values only if Cursor has them, which
    ```
 
 3. Save the file. VS Code underlines any JSON error in the editor.
-4. Check the connection: run **MCP: List Servers**, choose **zotero**, and start it if it is not running.
+4. Check the connection: run **MCP: List Servers**, choose **zotero**, and start it if it is not running. The first time the server starts, VS Code asks whether you trust it; confirm, or the server does not start.
 
-On macOS and Linux, if the server reports `Unconfigured`, add an `env` object with your two values to this entry, as in the macOS example for [Claude Desktop](#claude-desktop), and keep the file private. The [MCP configuration reference](https://code.visualstudio.com/docs/agents/reference/mcp-configuration) describes every field.
+VS Code passes its environment to the server, and on macOS and Linux it reads your shell's startup file even when you open it from the Dock, so the entry needs no `env` block. If the server still reports `Unconfigured`, add an `env` object with your two values to this entry, as in the macOS example for [Claude Desktop](#claude-desktop), and keep the file private. The [MCP configuration reference](https://code.visualstudio.com/docs/agents/reference/mcp-configuration) describes every field.
+
+### GitHub Copilot CLI
+
+GitHub Copilot CLI, the `copilot` command, reads `~/.copilot/mcp-config.json` (`%USERPROFILE%\.copilot\mcp-config.json` on Windows). See GitHub's guide to [adding MCP servers to Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers).
+
+1. Open the file.
+
+   Windows (PowerShell):
+
+   ```powershell
+   New-Item -ItemType Directory -Force "$env:USERPROFILE\.copilot" | Out-Null; notepad "$env:USERPROFILE\.copilot\mcp-config.json"
+   ```
+
+   macOS (Terminal):
+
+   ```bash
+   mkdir -p ~/.copilot && touch ~/.copilot/mcp-config.json && open -e ~/.copilot/mcp-config.json
+   ```
+
+   Linux:
+
+   ```bash
+   mkdir -p ~/.copilot && nano ~/.copilot/mcp-config.json
+   ```
+
+2. Add the server.
+
+   Windows:
+
+   ```json
+   {
+     "mcpServers": {
+       "zotero": {
+         "type": "stdio",
+         "command": "C:\\Users\\you\\.local\\bin\\zotero-mcp.exe",
+         "args": [],
+         "tools": ["*"]
+       }
+     }
+   }
+   ```
+
+   macOS and Linux. Copilot CLI passes servers only your `PATH`, so the entry has to carry your two values. Keep this file private:
+
+   ```json
+   {
+     "mcpServers": {
+       "zotero": {
+         "type": "stdio",
+         "command": "/Users/you/.local/bin/zotero-mcp",
+         "args": [],
+         "tools": ["*"],
+         "env": {
+           "ZOTERO_USER_ID": "YOUR_USER_ID",
+           "ZOTERO_API_KEY": "YOUR_API_KEY"
+         }
+       }
+     }
+   }
+   ```
+
+   `"tools": ["*"]` makes all the Zotero tools available.
+
+3. Save the file and check it.
+
+   Windows (PowerShell):
+
+   ```powershell
+   Get-Content "$env:USERPROFILE\.copilot\mcp-config.json" -Raw | ConvertFrom-Json
+   ```
+
+   macOS and Linux:
+
+   ```bash
+   python3 -m json.tool ~/.copilot/mcp-config.json
+   ```
+
+4. Check the connection: `copilot mcp list` lists **zotero**. Inside a Copilot CLI session, `/mcp` shows its status.
+
+Recent versions of VS Code also read this file. If VS Code then lists **zotero** twice, remove the entry from VS Code's own configuration: this one serves both.
 
 ### ChatGPT desktop app and Codex
 
@@ -511,6 +600,12 @@ The ChatGPT desktop app, the Codex CLI, and the Codex IDE extension share `~/.co
 3. Save the file and restart the app, or start a new Codex session.
 4. Check the connection: in the Codex CLI, `codex mcp list` shows the server. In any of the apps, the check in [Step 5](#step-5-check-that-it-works) works too.
 
+`startup_timeout_sec = 30` gives the server time for a slow first start; Codex's default is 10 seconds. Codex also waits only one second for servers when it builds a new session's tool list, so the Zotero tools can be missing from a session's first message while the server is still starting. To make Codex wait for them, add this line near the top of `config.toml`, above the first line that starts with `[`:
+
+```toml
+mcp_optional_startup_grace_ms = 15000
+```
+
 `env_vars` forwards the two variables from the app's environment, so the key stays out of the file. On macOS and Linux, the app may not have the variables, for example when you start it from the Dock. If the server reports `Unconfigured`, add your values below the entry instead, and keep the file private:
 
 ```toml
@@ -520,6 +615,27 @@ ZOTERO_API_KEY = "YOUR_API_KEY"
 ```
 
 ChatGPT in a web browser cannot start programs on your computer, so it cannot use this server.
+
+### Gemini CLI
+
+Gemini CLI keeps its servers in `~/.gemini/settings.json` (`%USERPROFILE%\.gemini\settings.json` on Windows). See [MCP servers with the Gemini CLI](https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/mcp-server.md).
+
+1. Open a terminal.
+2. Add the server for all your projects. `--scope user` matters: without it, Gemini CLI adds the server only to the current folder.
+
+   Windows (PowerShell):
+
+   ```powershell
+   gemini mcp add --scope user zotero "C:\Users\you\.local\bin\zotero-mcp.exe"
+   ```
+
+   macOS and Linux. Gemini CLI hides variables whose names contain `KEY` from servers, `ZOTERO_API_KEY` included, so the entry has to carry the values themselves. In this command, your shell fills in both values from Step 2, so the key is saved in Gemini CLI's settings without appearing in your shell history. Keep `~/.gemini/settings.json` private:
+
+   ```bash
+   gemini mcp add --scope user -e "ZOTERO_USER_ID=$ZOTERO_USER_ID" -e "ZOTERO_API_KEY=$ZOTERO_API_KEY" zotero "/Users/you/.local/bin/zotero-mcp"
+   ```
+
+3. Check the connection: `gemini mcp list` shows **zotero** as connected. Inside a session, `/mcp` lists its tools.
 
 ### Google Antigravity
 
@@ -572,9 +688,9 @@ Antigravity reads `~/.gemini/config/mcp_config.json` (`%USERPROFILE%\.gemini\con
    ```
 
 4. Restart Antigravity.
-5. Check the connection: **Additional Options (…) → MCP Servers** lists **zotero** and its tools.
+5. Check the connection. In the Antigravity editor, click **…** at the top of the agent panel, choose **MCP Servers**, then **Manage MCP Servers**: **zotero** is listed with its tools. In the Antigravity app, open **Settings**, then **Customizations**, then **Installed MCP Servers**.
 
-Antigravity passes its environment to the server, so the entry needs no `env` block. On macOS and Linux, if the server reports `Unconfigured`, add an `env` object with your two values, as in the macOS example for [Claude Desktop](#claude-desktop). Antigravity's config does not expand variable references, so write the values themselves, and keep the file private.
+Antigravity passes its environment to the server, so the entry needs no `env` block. On macOS and Linux, if the server reports `Unconfigured`, add an `env` object with your two values, as in the macOS example for [Claude Desktop](#claude-desktop), and keep the file private. Antigravity's documentation shows only literal values there, not references to variables.
 
 ### opencode
 
@@ -609,6 +725,7 @@ opencode reads `~/.config/opencode/opencode.json` (`%USERPROFILE%\.config\openco
          "type": "local",
          "command": ["/path/to/zotero-mcp"],
          "enabled": true,
+         "timeout": 30000,
          "environment": {
            "ZOTERO_USER_ID": "{env:ZOTERO_USER_ID}",
            "ZOTERO_API_KEY": "{env:ZOTERO_API_KEY}"
@@ -618,7 +735,7 @@ opencode reads `~/.config/opencode/opencode.json` (`%USERPROFILE%\.config\openco
    }
    ```
 
-   opencode replaces `{env:NAME}` with the variable's value when it loads the file.
+   opencode replaces `{env:NAME}` with the variable's value when it loads the file. `"timeout": 30000` lets opencode wait up to 30 seconds for the server's tools; its default of 5 seconds can be too short for the first start after you sign in.
 
 3. Save the file and check it. (A `.jsonc` file that contains comments fails this check even when it is correct.)
 
@@ -634,11 +751,103 @@ opencode reads `~/.config/opencode/opencode.json` (`%USERPROFILE%\.config\openco
    python3 -m json.tool ~/.config/opencode/opencode.json
    ```
 
-4. Restart opencode, then run the check in [Step 5](#step-5-check-that-it-works).
+4. Restart opencode, then check the connection: `opencode mcp list` shows **zotero** as connected.
 
-### Other MCP clients
+### Cline
 
-Any client that can start a local MCP server needs these settings:
+Cline, in VS Code, in JetBrains IDEs, and as a command-line tool, keeps its servers in one settings file. See Cline's [MCP overview](https://docs.cline.bot/mcp/mcp-overview).
+
+1. Open the file from Cline: click the **MCP Servers** icon at the top of the Cline panel, open the **Configure** tab, and click **Configure MCP Servers**.
+2. Add the server, following [Edit a JSON config file safely](#edit-a-json-config-file-safely).
+
+   Windows:
+
+   ```json
+   {
+     "mcpServers": {
+       "zotero": {
+         "command": "C:\\Users\\you\\.local\\bin\\zotero-mcp.exe",
+         "args": [],
+         "disabled": false
+       }
+     }
+   }
+   ```
+
+   macOS and Linux. Cline passes servers only a few basic variables, so the entry has to carry your two values. Keep this file private:
+
+   ```json
+   {
+     "mcpServers": {
+       "zotero": {
+         "command": "/Users/you/.local/bin/zotero-mcp",
+         "args": [],
+         "disabled": false,
+         "env": {
+           "ZOTERO_USER_ID": "YOUR_USER_ID",
+           "ZOTERO_API_KEY": "YOUR_API_KEY"
+         }
+       }
+     }
+   }
+   ```
+
+3. Save the file. Cline starts the server.
+4. Check the connection: under the **MCP Servers** icon, a green dot next to **zotero** means it is connected.
+
+### Zed
+
+Zed keeps its servers in its settings file, under `context_servers`. See Zed's [Model Context Protocol](https://zed.dev/docs/ai/mcp) guide.
+
+1. Open the settings file: open the command palette (Ctrl+Shift+P, or ⌘⇧P on macOS) and run **zed: open settings file**.
+2. Add the server inside the outer braces, following [Edit a JSON config file safely](#edit-a-json-config-file-safely):
+
+   ```json
+   {
+     "context_servers": {
+       "zotero": {
+         "command": "/path/to/zotero-mcp",
+         "args": []
+       }
+     }
+   }
+   ```
+
+3. Save the file.
+4. Check the connection: run **agent: open settings** and choose **MCP Servers**. A green dot next to **zotero** means it is running.
+
+Zed passes its environment to the server, and on macOS and Linux it reads your shell's startup file even when you open it from the Dock or a launcher. If the server still reports `Unconfigured`, add `"env": { "ZOTERO_USER_ID": "YOUR_USER_ID", "ZOTERO_API_KEY": "YOUR_API_KEY" }` to the entry, and keep the settings file private.
+
+### Other agents
+
+These agents take the same `mcpServers` entry as [Claude Desktop](#claude-desktop) unless the table says otherwise. Use the full path from Step 3, and follow [Your user ID and key in agent configs](#your-user-id-and-key-in-agent-configs).
+
+| Agent | Where to add the server | Notes |
+| --- | --- | --- |
+| Visual Studio 2022 (17.14 or later) or 2026, on Windows | `%USERPROFILE%\.mcp.json`, under `servers` instead of `mcpServers`, with `"type": "stdio"` | In Copilot Chat's **Agent** mode, the **Tools** button lists the server. Its tools start turned off; turn them on there. |
+| Devin CLI and Devin Desktop (formerly Windsurf) | Run `devin mcp add -s user zotero -- "/path/to/zotero-mcp"`, or edit `~/.config/devin/mcp_config.json` (`%APPDATA%\devin\mcp_config.json` on Windows) | `devin mcp list` shows the server. |
+| Kiro and Kiro CLI (formerly Amazon Q Developer CLI) | `~/.kiro/settings/mcp.json` | In the Kiro editor, first turn on MCP support in Settings. A `${ZOTERO_API_KEY}` reference works only after you add the variable to the **Mcp Approved Env Vars** setting. |
+| JetBrains AI Assistant | **Settings → Tools → AI Assistant → Model Context Protocol (MCP)**: add a server and paste the entry | **Import from Claude** copies your Claude Desktop entry. The **Status** column shows the connection. |
+| Junie (JetBrains) | `~/.junie/mcp/mcp.json` | `/mcp` in the Junie CLI shows the status. |
+| Continue | `~/.continue/config.yaml`, in YAML (see below) | MCP tools work only in **Agent** mode. |
+| goose | Run `goose configure`, choose **Add Extension**, then **Command-line Extension**, and enter the full path as the command | |
+| Warp | **Settings → Agents → MCP servers → Add**, or `~/.warp/.mcp.json` | The MCP servers page lists the server's tools and has a **View Logs** button. |
+| Qwen Code | `~/.qwen/settings.json` | Same format as [Gemini CLI](#gemini-cli). |
+| Kilo Code | `~/.config/kilo/kilo.jsonc` | Same format as [opencode](#opencode). |
+| Perplexity app for Mac | **Settings → Connectors**, after you install the PerplexityXPC helper that Perplexity offers there | See Perplexity's [Local and Remote MCPs](https://www.perplexity.ai/help-center/en/articles/11502712-local-and-remote-mcps-for-perplexity). |
+
+Continue uses YAML. Add this to `~/.continue/config.yaml` (`%USERPROFILE%\.continue\config.yaml` on Windows). If the file already has an `mcpServers:` list, add only the item that starts with `- name: zotero`:
+
+```yaml
+mcpServers:
+  - name: zotero
+    type: stdio
+    command: /path/to/zotero-mcp
+```
+
+In YAML, write a Windows path as it is, without quotation marks, for example `command: C:\Users\you\.local\bin\zotero-mcp.exe`.
+
+Any other agent that can start a local MCP server needs these settings:
 
 | Setting | Value |
 | --- | --- |
@@ -647,8 +856,6 @@ Any client that can start a local MCP server needs these settings:
 | Command | The full path from Step 3 |
 | Arguments | None |
 | Environment | `ZOTERO_USER_ID` and `ZOTERO_API_KEY`. Optional on Windows, where the server reads them itself. |
-
-Perplexity's [MCP documentation](https://docs.perplexity.ai/docs/getting-started/integrations/mcp-server) covers connecting other clients *to* Perplexity, not starting a local server from the Perplexity app.
 
 ## Step 5: Check that it works
 
@@ -679,13 +886,15 @@ Ask in plain language; the agent picks the tool. Some examples:
 | `list_zotero_items` | Page through the library, or one collection when `collection_key` is set. |
 | `list_zotero_collections` | List collections. |
 | `get_zotero_item` | Fetch one item, including its abstract and a Vancouver line. |
-| `zotero_api` | Send any other Web API v3 request. `DELETE` requires `confirm_delete` true. |
-| `upload_zotero_file` | Upload a file onto an attachment item that already exists. |
-| `embed_zotero_word_fields` | Replace citation markers in a `.docx` with Zotero Word fields. |
+| `zotero_api` | Send any other Web API v3 request, such as `groups` to list your group libraries. `DELETE` requires `confirm_delete` true. |
+| `upload_zotero_file` | Upload a file onto an attachment item that already exists. It never replaces a file the attachment already has. |
+| `embed_zotero_word_fields` | Replace citation markers in a `.docx` with Zotero Word fields, in a new copy of the document. |
 
-Search results and item lists come one page at a time. To get the next page, call again with `start` set to the returned `next_start`, until `next_start` is null; `list_zotero_collections` returns your collections in one result. Item keys are eight letters or digits. Zotero documents write requests in [Write Requests](https://www.zotero.org/support/dev/web_api/v3/write_requests) and [File Uploads](https://www.zotero.org/support/dev/web_api/v3/file_upload).
+Every result has a `status` and a `message`. `Found` and `OK` mean the request worked; `Not_Found` means nothing matched; `Unconfigured` means the user ID or API key is missing; `API_Error` comes with a message that says what went wrong.
 
-The tools that take a file need its full path, such as `C:\drafts\paper.docx` on Windows or `/Users/you/Documents/paper.docx` on macOS. A path that starts with `~` is not expanded.
+Search results and item lists come one page at a time. To get the next page, call again with `start` set to the returned `next_start`, until `next_start` is null; `list_zotero_collections` returns your collections in one result. Results cover every kind of library item, including cases, statutes, and emails; attachments, notes, and annotations are left out. Item keys are eight letters or digits. Zotero documents write requests in [Write Requests](https://www.zotero.org/support/dev/web_api/v3/write_requests) and [File Uploads](https://www.zotero.org/support/dev/web_api/v3/file_upload).
+
+The tools that take a file need its full path, such as `C:\drafts\paper.docx` on Windows or `/Users/you/Documents/paper.docx` on macOS. A path that starts with `~` means your home folder.
 
 The tools are also plain Python functions. Install the package into a Python environment (`python -m pip install git+https://github.com/Jayaram-Nambiar/zotero-mcp.git`), then:
 
@@ -708,20 +917,20 @@ Plain text such as `(Smith, 2020)` or a pasted reference is not a Zotero citatio
    {{zotero:ABCD1234}}
    {{zotero:ABCD1234+EFGH5678}}
    {{zotero:ABCD1234|locator=12|label=page}}
-   {{zotero:ABCD1234|prefix=see|suffix=.}}
+   {{zotero:ABCD1234|prefix=see|suffix=, emphasis added}}
    {{zotero:ABCD1234|suppress-author=true}}
    {{zotero:bibliography}}
    ```
 
    - `ABCD1234` is an item key. A plus sign joins several items into one citation.
-   - `locator` adds a page or other location. `label` names it and defaults to `page`; other CSL labels include `chapter`, `figure`, `paragraph`, and `volume`.
-   - `prefix` adds text before the citation, and `suffix` adds text right after it. Spaces at the start and end of an option's value are ignored.
-   - `suppress-author=true` leaves the author's name out of the citation.
+   - `locator` adds a page or other location to the citation's last item. `label` names it and defaults to `page`; other CSL labels include `chapter`, `figure`, `paragraph`, and `volume`.
+   - `prefix` adds text before the first item, and `suffix` adds text after the last item. Both appear inside the citation's brackets, as in `(see Smith, 2020, emphasis added)`. Spaces at the start and end of an option's value are ignored.
+   - `suppress-author=true` leaves the authors' names out of the citation, as in `(2020)`.
    - `{{zotero:bibliography}}` marks where the reference list goes.
    - Spaces are allowed just inside the braces, as in `{{ zotero:ABCD1234 }}`. Write `zotero` in lowercase, directly followed by a colon. A marker that does not follow this pattern stays in the document as plain text.
 
 3. **Save the document as `.docx`.**
-4. **Ask the agent to convert it**, with the document's full path, for example: `Turn the citation markers in C:\drafts\paper.docx into Zotero citations using the apa style.` The agent calls `embed_zotero_word_fields`, which writes a new file, `paper.zotero.docx`, next to the original, and reports how many citations it wrote. If that number is smaller than the number of citation markers, a marker was mistyped and left as plain text.
+4. **Ask the agent to convert it**, with the document's full path, for example: `Turn the citation markers in C:\drafts\paper.docx into Zotero citations using the apa style.` The agent calls `embed_zotero_word_fields`, which writes a new file, `paper.zotero.docx`, next to the original, and reports how many citations it wrote. The original document is never changed. A marker with a wrong key or option stops the conversion, and the message names that marker; fix it and convert again. A marker that does not follow the pattern above stays in the document as plain text, so if the count is smaller than the number of markers you wrote, look for a mistyped one.
 5. **Open the new file in Word**, go to the **Zotero** tab, and choose **Refresh**. Refresh formats every citation and the bibliography in the chosen style. Until then, the citations show a readable stand-in, such as `1` or `(Smith, 2020)`.
 6. **Change the style later** with **Zotero → Document Preferences**.
 
@@ -745,6 +954,7 @@ What to know before you convert:
 
   Accept or reject tracked changes first, and put markers in plain paragraphs of text.
 - **Markers are found in body paragraphs, table cells, and each section's main header and footer.** Footnotes, text boxes, and first-page or even-page headers are not scanned.
+- **The new copy does not carry your name.** Its Author and Last Modified By document properties are cleared.
 - **The fields are Word fields.** LibreOffice stores Zotero citations as reference marks, which this server does not write.
 - **Citations link to your personal library through your user ID.** `zotero_api` can still reach a group library with a `groups/GROUPID/...` path. A collaborator on another Zotero account sees the embedded citation data and can restyle it, but Refresh updates the live item data only for the account that owns the user ID.
 
@@ -771,10 +981,10 @@ uv tool install --force git+https://github.com/Jayaram-Nambiar/zotero-mcp.git
 
 ### Pin a version
 
-Each release has a tag, such as `v1.0.2`; [CHANGELOG.md](CHANGELOG.md) lists them. To install one release and stay on it:
+Each release has a tag, such as `v1.1.0`; [CHANGELOG.md](CHANGELOG.md) lists them. To install one release and stay on it:
 
 ```bash
-uv tool install --force git+https://github.com/Jayaram-Nambiar/zotero-mcp.git@v1.0.2
+uv tool install --force git+https://github.com/Jayaram-Nambiar/zotero-mcp.git@v1.1.0
 ```
 
 `uv tool upgrade` leaves a pinned version alone. To move to another release, run the same command with that release's tag. To follow the newest version again, run the install command from Step 3 with `--force`.
@@ -809,7 +1019,8 @@ Keep a single installation of the server. Agents that point at different copies 
 | --- | --- |
 | The agent does not list Zotero tools | Check that the command is the full path from Step 3, that the config file passes its check command, and that the agent was restarted. Quit Claude Desktop from the notification area or menu bar; closing its window does not restart it. |
 | Claude Desktop loses the `zotero` entry | Claude Desktop was running while the file was edited and saved its own copy over the change. Quit it completely, edit the file again, then start it. |
-| A tool reports `Unconfigured` | The server found no usable user ID or API key. Repeat Step 2. On Windows the next request picks the values up. On macOS and Linux, restart the agent, or put the values in its config as its section in Step 4 describes. |
+| An agent reports a startup timeout, or the Zotero tools appear only after a while | The server's first start after you sign in can take 10 seconds or more. Try again, or give the agent more time: `startup_timeout_sec` and `mcp_optional_startup_grace_ms` for [Codex](#chatgpt-desktop-app-and-codex), `timeout` for [opencode](#opencode). |
+| A tool reports `Unconfigured` | The server found no usable user ID or API key. Repeat Step 2. On Windows the next request picks the values up. On macOS and Linux, restart the agent, or put the values in its config as its section in Step 4 describes; Claude Desktop, GitHub Copilot CLI, Gemini CLI, and Cline always need them there. |
 | Requests fail after you replaced the API key | Store the new key as in Step 2, update any config file that holds the key itself, and restart your agents. A value an agent passes takes precedence over the stored one. |
 | `uv` or `git` is not recognized after installing it | Close the terminal and open a new one. |
 | The install fails with `Git executable not found` | Install Git, as in [Install Git](#install-git), then open a new terminal and repeat the install. |
@@ -819,6 +1030,8 @@ Keep a single installation of the server. Agents that point at different copies 
 | Search finds nothing, but the website shows the item | The desktop app has a library that does not contain the item yet. Sync Zotero. The server does not fall back to the website for an item that the desktop library is missing, because the desktop library is the copy you are editing. |
 | `zotero_api` returns HTTP 403 | The API key does not allow that request. Create a key with the permission it needs, such as write access, and store it as in Step 2. |
 | Converting a Word document fails on Windows | Word locks open files. Close the converted document, such as `paper.zotero.docx`, in Word, then convert again. |
+| Converting a Word document stops at a marker | The message names the marker. Fix its item key or option in the original document, save it, and convert again. |
+| Converting a Word document says no library item uses a key | Check the key in the marker. If the item is new, sync Zotero, then convert again. |
 | On macOS, the agent cannot read a document in Documents or Desktop | Allow the agent's access to that folder when macOS asks, or turn it on in System Settings → Privacy & Security → Files and Folders. |
 | Word shows `ADDIN ZOTERO_ITEM` text | Word is showing field codes. Press Alt+F9 (Option+Fn+F9 on a Mac), or see the [field-code article](https://www.zotero.org/support/kb/word_field_codes). |
 | Zotero asks you to choose a citation style | The document has no Zotero document preferences. Run `embed_zotero_word_fields` again on the original document. |
@@ -828,10 +1041,17 @@ Keep a single installation of the server. Agents that point at different copies 
 
 | Agent | Where to look |
 | --- | --- |
-| Claude Desktop | The log file `%APPDATA%\Claude\logs\mcp-server-zotero.log` on Windows, or `~/Library/Logs/Claude/mcp-server-zotero.log` on macOS |
+| Claude Desktop | The log file `mcp-server-zotero.log` in `%LOCALAPPDATA%\Claude\Logs` on Windows (`%APPDATA%\Claude\logs` in older versions), or in `~/Library/Logs/Claude` on macOS |
 | Claude Code | `claude mcp get zotero` for the status; `/mcp` inside a session |
 | Cursor | Output panel → **MCP Logs** |
 | VS Code | **MCP: List Servers** → **zotero** → **Show Output** |
+| GitHub Copilot CLI | `copilot mcp list`; `/mcp` inside a session |
+| ChatGPT and Codex | `codex mcp list`; `/mcp` in a Codex session |
+| Gemini CLI | `gemini mcp list`; `/mcp` inside a session |
+| Google Antigravity | The MCP servers page, as in [Google Antigravity](#google-antigravity) |
+| opencode | `opencode mcp list` |
+| Cline | The **MCP Servers** view in Cline |
+| Zed | **agent: open settings** → **MCP Servers** |
 | Other agents | The agent's own MCP settings or documentation |
 
 For more detail, add `LOG_LEVEL` with the value `DEBUG` to the server's environment in the agent's config. The server writes its log to standard error, never to the protocol stream.
@@ -844,7 +1064,7 @@ For more detail, add `LOG_LEVEL` with the value `DEBUG` to the server's environm
 
 - The API key is the key to your library. Use a key with only the access agents need, and leave write access off unless they must change your library.
 - Prefer environment variables and config references (`${env:...}`, `env_vars`, `{env:...}`) over pasting the key into config files. Keep any file that holds the key itself private.
-- The server sends the key only to `api.zotero.org`, as a request header. It never returns the key in a tool result and removes it from error messages.
+- The server sends the key only to `api.zotero.org`, as a request header. When Zotero redirects a request to another host, such as its file storage, the key is not sent along. The server never returns the key in a tool result and removes it from error messages.
 - If the key leaks, revoke it on the [API keys page](https://www.zotero.org/settings/keys), create a new one, store it as in Step 2, and update any config file that holds the old key.
 
 [SECURITY.md](SECURITY.md) explains how to report a vulnerability and lists the server's safeguards.

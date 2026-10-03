@@ -45,7 +45,14 @@ Agents keep running the copy installed with `uv tool install` (see the [README](
 
 ## Run the tests
 
-The tests run offline and never contact Zotero.
+The tests run offline and never contact Zotero. They take about 20 seconds:
+
+| File | What it covers |
+| --- | --- |
+| `tests/test_client.py` | Credentials, path rules, item fields, tool names and annotations |
+| `tests/test_http.py` | Requests against fake Zotero servers on `127.0.0.1`: network failures, the desktop-app fallback, redirects, writes, uploads, and batched reads |
+| `tests/test_word.py` | The Word field writer and `embed_zotero_word_fields`, with `.docx` files built in a temporary folder |
+| `tests/test_protocol.py` | The server started the way agents start it, over standard input and output: every protocol version, the tool definitions, and each result against its declared schema |
 
 Windows (PowerShell):
 
@@ -73,11 +80,13 @@ To run one test, or only the tests whose names contain a word, pass its name or 
 1. **Run the tests before you commit.** CI must pass before a change is merged.
 2. **Write for Python 3.10.** It is the oldest supported version, and newer syntax or standard-library calls fail there.
 3. **Keep tool names aligned with what they do.** `search_zotero` searches; `embed_zotero_word_fields` writes Word fields. A rename is a breaking change and needs a `CHANGELOG.md` entry. What an agent reads about a tool lives in four places that change together: the `instructions` string in `src/zotero_mcp/server.py`, the tool's docstring, its `Field(description=...)` annotations, and the tool table in the README.
-4. **Treat the Word field text as a compatibility contract.** `tests/test_word.py` checks the `ADDIN ZOTERO_ITEM CSL_CITATION` and `ADDIN ZOTERO_BIBL` instructions and the `ZOTERO_PREF_*` properties. Change the writer and those tests in the same commit.
-5. **Keep Zotero's source code out.** Zotero is licensed under the GNU AGPL. This project is MIT-licensed and implements the documented field format itself.
-6. **Keep secrets and private data out.** Do not commit API keys, user IDs, `.env` files, or documents from a real library. Tests must not read real credentials either: on Windows the server falls back to the stored user environment, so a credential test replaces `zotero_mcp.client._windows_environment` with a fake (see `_credentials()` in `tests/test_client.py`).
-7. **Never write to standard output in the server.** Standard output carries the MCP protocol. Log with `logging`, which writes to standard error.
-8. **Update the documentation in the same change.** A change that affects setup or behavior updates the README, and every change users notice gets an entry under `[Unreleased]` in `CHANGELOG.md`.
+4. **Keep tool definitions portable.** Agents pass tool definitions to different model providers, and some rewrite them. Tool names match `^[A-Za-z0-9_-]{1,64}$`; input schemas use no `$ref`; array parameters have typed items; and descriptions state defaults and ranges, because some agents drop `default`, `minimum`, and `maximum`. Annotations stay accurate: `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint`, which VS Code uses to decide what the user approves. `tests/test_protocol.py` checks the definitions.
+5. **Errors are data.** A tool returns its result model with a `status` and a clear `message`; it never raises to the agent. A new read path catches `READ_ERRORS` from `src/zotero_mcp/client.py`, and a new failure type is mapped there or turned into an `API_Error` result.
+6. **Treat the Word field text as a compatibility contract.** `tests/test_word.py` checks the `ADDIN ZOTERO_ITEM CSL_CITATION` and `ADDIN ZOTERO_BIBL` instructions and the `ZOTERO_PREF_*` properties. Change the writer and those tests in the same commit.
+7. **Keep Zotero's source code out.** Zotero is licensed under the GNU AGPL. This project is MIT-licensed and implements the documented field format itself.
+8. **Keep secrets and private data out.** Do not commit API keys, user IDs, `.env` files, or documents from a real library. Tests must not read real credentials either. On Windows the server falls back to the stored user environment, so a test that reaches credential code replaces `zotero_mcp.client._windows_environment` with a fake (see `_credentials()` in `tests/test_client.py`). Fake credentials must look real: digits for the user ID, and letters and digits for the key. The server treats anything else as unset and would fall back to the stored values.
+9. **Never write to standard output in the server.** Standard output carries the MCP protocol. Log with `logging`, which writes to standard error.
+10. **Update the documentation in the same change.** A change that affects setup or behavior updates the README, and every change users notice gets an entry under `[Unreleased]` in `CHANGELOG.md`. Check every statement about an agent's configuration against that agent's current documentation.
 
 ## Commit messages
 

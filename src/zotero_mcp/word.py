@@ -1,20 +1,24 @@
 """Write Microsoft Word fields that the Zotero plugin can refresh.
 
 Zotero stores a citation as a Word field whose instruction begins
-`` ADDIN ZOTERO_ITEM CSL_CITATION ``, a bibliography as
-`` ADDIN ZOTERO_BIBL ... CSL_BIBLIOGRAPHY ``, and document preferences in
-custom properties ``ZOTERO_PREF_1``, ``ZOTERO_PREF_2``, and so on. Each
-property holds at most 255 characters. The plugin concatenates them and parses
-one JSON object (dataVersion 4). See Zotero's field-code note:
+`` ADDIN ZOTERO_ITEM CSL_CITATION `` followed by a citation in the CSL citation
+JSON schema, a bibliography as `` ADDIN ZOTERO_BIBL ... CSL_BIBLIOGRAPHY ``,
+and document preferences in custom properties ``ZOTERO_PREF_1``,
+``ZOTERO_PREF_2``, and so on. Each property holds at most 255 characters. The
+plugin concatenates them and parses one JSON object (dataVersion 4). Zotero's
+field-code note introduces these fields:
 https://www.zotero.org/support/kb/word_field_codes
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
+import tempfile
 import zipfile
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -22,6 +26,7 @@ from urllib.parse import urlparse
 from xml.etree import ElementTree
 
 from docx import Document
+from docx.opc.exceptions import OpcError
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.oxml.table import CT_Tc
@@ -33,6 +38,7 @@ _MARKER = re.compile(r"\{\{\s*zotero:([^{}]+?)\s*\}\}")
 _KEY = re.compile(r"^[A-Za-z0-9]{8}$")
 _STYLE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _LOCALE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
+_LEADING_NUMBER = re.compile(r"^\s*(?:\[\d+\]|\d+\.)\s*")
 _OPTION_NAMES = frozenset({"locator", "label", "prefix", "suffix", "suppress-author"})
 _LABELS = frozenset({
     "page", "book", "chapter", "column", "figure", "folio", "issue", "line",
@@ -48,6 +54,7 @@ _NUMERIC_STYLES = frozenset({
     "nlm",
     "nlm-brackets",
 })
+_SIZE_LIMIT = 30 * 1024 * 1024
 _PREF_LIMIT = 255
 _CITATION_SCHEMA = "https://github.com/citation-style-language/schema/raw/master/csl-citation.json"
 _CUSTOM_NS = "http://schemas.openxmlformats.org/officeDocument/2006/custom-properties"
@@ -55,6 +62,8 @@ _VT_NS = "http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"
 _CUSTOM_TYPE = "application/vnd.openxmlformats-officedocument.custom-properties+xml"
 _CUSTOM_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/custom-properties"
 _FMTID = "{D5CDD505-2E9C-101B-9397-08002B2CF9AE}"
+# What a damaged or non-Word file raises while it is read.
+_UNREADABLE = (OpcError, KeyError, zipfile.BadZipFile, zlib.error, SyntaxError)
 
 ElementTree.register_namespace("", _CUSTOM_NS)
 ElementTree.register_namespace("vt", _VT_NS)
@@ -105,23 +114,49 @@ class _Job:
 
 
 def style_id(style: str) -> str:
-    """Return a CSL style URI Zotero will accept."""
+    """Return the CSL style ID Zotero uses, such as http://www.zotero.org/styles/apa."""
     value = style.strip()
     if value.startswith(("http://", "https://")):
-        host = urlparse(value).netloc.lower().removeprefix("www.")
+        parsed = urlparse(value)
+        host = parsed.netloc.lower().removeprefix("www.")
         if host not in {"zotero.org", "citationstyles.org"}:
             raise ValueError("style must be a short name such as vancouver, or a zotero.org or citationstyles.org style URL.")
-        return value
+        value = parsed.path.rstrip("/").rsplit("/", 1)[-1]
     if _STYLE_NAME.fullmatch(value) is None:
         raise ValueError("style must be a short name such as vancouver or apa.")
     return f"http://www.zotero.org/styles/{value}"
 
 
 def style_name(style: str) -> str:
-    value = style.strip()
-    if "/" in value:
-        return value.rstrip("/").rsplit("/", 1)[-1]
-    return value
+    return style_id(style).rsplit("/", 1)[-1]
+
+
+def check_locale(locale: str) -> None:
+    if _LOCALE.fullmatch(locale) is None:
+        raise ValueError("locale must look like en-US.")
+
+
+def check_paths(source: Path, destination: Path) -> None:
+    """Refuse paths the conversion cannot use, before any work is done."""
+    if not source.is_absolute() or not destination.is_absolute():
+        raise ValueError("Pass full paths, such as C:\\drafts\\paper.docx or /Users/you/paper.docx.")
+    if source.suffix.lower() != ".docx" or destination.suffix.lower() != ".docx":
+        raise ValueError("Both paths must be .docx files. Save a .doc file as .docx in Word first.")
+    if not source.is_file():
+        raise ValueError("docx_path is not a file.")
+    if source.stat().st_size > _SIZE_LIMIT:
+        raise ValueError("The document is larger than the 30 MB limit for this tool.")
+    if not destination.parent.is_dir():
+        raise ValueError("The output directory does not exist.")
+    if destination.exists() and destination.samefile(source):
+        raise ValueError("output_path must differ from docx_path. The original document is never overwritten.")
+
+
+def _open(source: Path) -> Any:
+    try:
+        return Document(str(source))
+    except _UNREADABLE as exc:
+        raise ValueError(f"{source.name} is not a readable Word .docx file.") from exc
 
 
 def parse_marker_body(body: str) -> Marker:
@@ -164,6 +199,13 @@ def parse_marker_body(body: str) -> Marker:
     return Marker(kind="citation", citation=citation)
 
 
+def _parse(match: re.Match[str]) -> Marker:
+    try:
+        return parse_marker_body(match.group(1))
+    except ValueError as exc:
+        raise ValueError(f"Marker {match.group(0)}: {exc}") from None
+
+
 def chunk_property(value: str, limit: int = _PREF_LIMIT) -> list[str]:
     """Split document preferences the way the Word plugin stores them."""
     if any(ord(char) < 32 and char not in "\t" for char in value):
@@ -172,8 +214,7 @@ def chunk_property(value: str, limit: int = _PREF_LIMIT) -> list[str]:
 
 
 def document_preferences(*, style: str, locale: str, session_id: str, has_bibliography: bool) -> str:
-    if _LOCALE.fullmatch(locale) is None:
-        raise ValueError("locale must look like en-US.")
+    check_locale(locale)
     payload = {
         "style": {
             "styleID": style_id(style),
@@ -193,8 +234,10 @@ def document_preferences(*, style: str, locale: str, session_id: str, has_biblio
 
 
 def citation_instruction(job: _Job, marker: CitationMarker, visible: str) -> str:
+    """Build the field instruction. A prefix goes on the first item; locator and suffix on the last."""
     citation_id = _new_id(job)
     items = []
+    last = len(marker.keys) - 1
     for index, key in enumerate(marker.keys):
         item_data = dict(job.items[key].csl)
         item_data.setdefault("id", key)
@@ -203,16 +246,16 @@ def citation_instruction(job: _Job, marker: CitationMarker, visible: str) -> str
             "uris": [f"http://zotero.org/users/{job.user_id}/items/{key}"],
             "itemData": item_data,
         }
-        if index == len(marker.keys) - 1:
+        if index == 0 and marker.prefix:
+            entry["prefix"] = marker.prefix
+        if index == last:
             if marker.locator:
                 entry["locator"] = marker.locator
                 entry["label"] = marker.label or "page"
-            if marker.prefix:
-                entry["prefix"] = marker.prefix
             if marker.suffix:
                 entry["suffix"] = marker.suffix
-            if marker.suppress_author:
-                entry["suppress-author"] = True
+        if marker.suppress_author:
+            entry["suppress-author"] = True
         items.append(entry)
     payload = {
         "citationID": citation_id,
@@ -241,27 +284,23 @@ def _new_id(job: _Job) -> str:
 
 
 def _visible_citation(job: _Job, marker: CitationMarker) -> str:
+    """A readable stand-in until Zotero's Refresh formats the citation."""
     if job.numeric:
-        numbers = ",".join(str(job.order[key]) for key in marker.keys)
-        text = numbers
-        if marker.locator:
-            label = "p." if marker.label in {"", "page"} else marker.label
-            text = f"{text}, {label} {marker.locator}"
+        text = ",".join(str(job.order[key]) for key in marker.keys)
     else:
         parts = []
         for key in marker.keys:
             author, year = _author_year(job.items[key].csl)
-            parts.append(f"{author}, {year}")
+            parts.append(year if marker.suppress_author else f"{author}, {year}")
         text = "; ".join(parts)
-        if marker.locator:
-            label = "p." if marker.label in {"", "page"} else marker.label
-            text = f"{text}, {label} {marker.locator}"
-        text = f"({text})"
+    if marker.locator:
+        label = "p." if marker.label in {"", "page"} else marker.label
+        text = f"{text}, {label} {marker.locator}"
     if marker.prefix:
         text = f"{marker.prefix} {text}"
     if marker.suffix:
         text = f"{text}{marker.suffix}"
-    return text
+    return text if job.numeric else f"({text})"
 
 
 def _author_year(csl: dict[str, Any]) -> tuple[str, str]:
@@ -282,13 +321,14 @@ def _bibliography_text(job: _Job) -> str:
     lines = []
     for key, number in sorted(job.order.items(), key=lambda item: item[1]):
         line = job.items[key].bibliography.strip()
-        if job.numeric and not re.match(r"^\d+\.", line):
-            line = f"{number}. {line}"
+        if job.numeric:
+            # Zotero numbers a one-item bibliography 1, so renumber each line.
+            line = f"{number}. {_LEADING_NUMBER.sub('', line)}"
         lines.append(line)
     return "\n".join(lines)
 
 
-def iter_paragraphs(document: Document):
+def iter_paragraphs(document: Any):
     """Yield body, table, header, and footer paragraphs once each."""
     # Hold the elements, not their id()s: lxml frees a proxy that nothing
     # references, and a later proxy for a different element can reuse its id.
@@ -324,6 +364,11 @@ def iter_paragraphs(document: Document):
             yield from walk_table(Table(child, document))
     for section in document.sections:
         for container in (section.header, section.footer):
+            # A linked header or footer has no part of its own: it repeats the
+            # previous section's, or the first section has none. Reading its
+            # paragraphs would add an empty part to the document.
+            if container.is_linked_to_previous:
+                continue
             for paragraph in container.paragraphs:
                 found = take(paragraph)
                 if found is not None:
@@ -333,7 +378,7 @@ def iter_paragraphs(document: Document):
 
 
 def _markers_in(paragraph: Paragraph) -> list[Marker]:
-    return [parse_marker_body(match.group(1)) for match in _MARKER.finditer(paragraph.text or "")]
+    return [_parse(match) for match in _MARKER.finditer(paragraph.text or "")]
 
 
 def _add_field(paragraph: Paragraph, instruction: str, result: str) -> None:
@@ -379,7 +424,7 @@ def _write_paragraph(paragraph: Paragraph, job: _Job) -> None:
     for match in _MARKER.finditer(text):
         if match.start() > cursor:
             pieces.append((text[cursor:match.start()], None))
-        pieces.append(("", parse_marker_body(match.group(1))))
+        pieces.append(("", _parse(match)))
         cursor = match.end()
     if cursor < len(text):
         pieces.append((text[cursor:], None))
@@ -390,8 +435,6 @@ def _write_paragraph(paragraph: Paragraph, job: _Job) -> None:
                 paragraph.add_run(plain)
             continue
         if marker.kind == "bibliography":
-            if job.bibliography_inserted:
-                raise ValueError("The document has more than one {{zotero:bibliography}} marker.")
             _add_field(paragraph, bibliography_instruction(), _bibliography_text(job))
             job.bibliography_inserted = True
             continue
@@ -401,15 +444,23 @@ def _write_paragraph(paragraph: Paragraph, job: _Job) -> None:
         job.citation_count += 1
 
 
-def _ordered_keys(paragraphs: list[Paragraph]) -> dict[str, int]:
+def _scan(paragraphs: list[Paragraph]) -> dict[str, int]:
+    """Number item keys by first appearance, and allow one bibliography marker."""
     order: dict[str, int] = {}
+    bibliographies = 0
     for paragraph in paragraphs:
         for marker in _markers_in(paragraph):
-            if marker.kind != "citation" or marker.citation is None:
+            if marker.kind == "bibliography":
+                bibliographies += 1
                 continue
+            assert marker.citation is not None
             for key in marker.citation.keys:
                 if key not in order:
                     order[key] = len(order) + 1
+    if bibliographies > 1:
+        raise ValueError("The document has more than one {{zotero:bibliography}} marker.")
+    if not order:
+        raise ValueError("The document has no {{zotero:ITEMKEY}} citation markers.")
     return order
 
 
@@ -417,21 +468,7 @@ def citation_keys(source: Path) -> list[str]:
     """Return item keys in first-seen order from citation markers."""
     if not source.is_file():
         raise ValueError("docx_path is not a file.")
-    document = Document(str(source))
-    keys: list[str] = []
-    seen: set[str] = set()
-    for paragraph in iter_paragraphs(document):
-        for match in _MARKER.finditer(paragraph.text or ""):
-            marker = parse_marker_body(match.group(1))
-            if marker.kind != "citation" or marker.citation is None:
-                continue
-            for key in marker.citation.keys:
-                if key not in seen:
-                    seen.add(key)
-                    keys.append(key)
-    if not keys:
-        raise ValueError("The document has no {{zotero:ITEMKEY}} citation markers.")
-    return keys
+    return list(_scan(list(iter_paragraphs(_open(source)))))
 
 
 def embed_document(
@@ -445,22 +482,16 @@ def embed_document(
     insert_bibliography: bool,
 ) -> EmbedStats:
     """Replace ``{{zotero:...}}`` markers with Zotero Word fields."""
-    if not user_id.isdigit():
+    if not user_id.isascii() or not user_id.isdigit():
         raise ValueError("user_id must be the numeric Zotero user ID.")
-    if not source.is_file():
-        raise ValueError("docx_path is not a file.")
-    if source.suffix.lower() != ".docx" or destination.suffix.lower() != ".docx":
-        raise ValueError("Both paths must be .docx files.")
-    if source.stat().st_size > 30 * 1024 * 1024:
-        raise ValueError("The document is larger than the 30 MB limit for this tool.")
+    check_paths(source, destination)
+    check_locale(locale)
     resolved_style = style_id(style)
-    document = Document(str(source))
+    document = _open(source)
     document.core_properties.author = ""
     document.core_properties.last_modified_by = ""
     paragraphs = list(iter_paragraphs(document))
-    order = _ordered_keys(paragraphs)
-    if not order:
-        raise ValueError("The document has no {{zotero:ITEMKEY}} citation markers.")
+    order = _scan(paragraphs)
     missing = [key for key in order if key not in items]
     if missing:
         raise ValueError("No Zotero item was loaded for " + ", ".join(missing) + ".")
@@ -479,22 +510,22 @@ def embed_document(
         paragraph = document.add_paragraph()
         _add_field(paragraph, bibliography_instruction(), _bibliography_text(job))
         job.bibliography_inserted = True
-    if not destination.parent.is_dir():
-        raise ValueError("The output directory does not exist.")
-    temporary = destination.with_name(destination.name + ".partial")
+    preferences = document_preferences(
+        style=style,
+        locale=locale,
+        session_id=job.session_id,
+        has_bibliography=job.bibliography_inserted,
+    )
+    # A unique temporary name: a retried call may run while a timed-out one is still writing.
+    handle, name = tempfile.mkstemp(prefix=f"{destination.stem}.", suffix=".partial", dir=destination.parent)
+    os.close(handle)
+    temporary = Path(name)
     try:
         document.save(str(temporary))
-        preferences = document_preferences(
-            style=style,
-            locale=locale,
-            session_id=job.session_id,
-            has_bibliography=job.bibliography_inserted,
-        )
         _write_preferences(temporary, chunk_property(preferences))
         temporary.replace(destination)
-    except Exception:
+    finally:
         temporary.unlink(missing_ok=True)
-        raise
     return EmbedStats(
         output_path=destination,
         style_id=resolved_style,
@@ -504,23 +535,28 @@ def embed_document(
 
 
 def _write_preferences(path: Path, chunks: list[str]) -> None:
-    temporary = path.with_name(path.name + ".zip")
-    with zipfile.ZipFile(path, "r") as source, zipfile.ZipFile(temporary, "w") as target:
-        names = set(source.namelist())
-        existing = source.read("docProps/custom.xml") if "docProps/custom.xml" in names else None
-        for info in source.infolist():
-            data = source.read(info.filename)
-            if info.filename == "[Content_Types].xml":
-                data = _content_types(data)
-            elif info.filename == "_rels/.rels":
-                data = _relationships(data)
-            elif info.filename == "docProps/custom.xml":
-                continue
-            target.writestr(info, data)
-        target.writestr("docProps/custom.xml", _custom_xml(chunks, existing))
-        if "[Content_Types].xml" not in names or "_rels/.rels" not in names:
-            raise ValueError("The .docx package is missing its content types or relationships.")
-    temporary.replace(path)
+    handle, name = tempfile.mkstemp(suffix=".zip", dir=path.parent)
+    os.close(handle)
+    temporary = Path(name)
+    try:
+        with zipfile.ZipFile(path, "r") as source, zipfile.ZipFile(temporary, "w") as target:
+            names = set(source.namelist())
+            if "[Content_Types].xml" not in names or "_rels/.rels" not in names:
+                raise ValueError("The .docx package is missing its content types or relationships.")
+            existing = source.read("docProps/custom.xml") if "docProps/custom.xml" in names else None
+            for info in source.infolist():
+                data = source.read(info.filename)
+                if info.filename == "[Content_Types].xml":
+                    data = _content_types(data)
+                elif info.filename == "_rels/.rels":
+                    data = _relationships(data)
+                elif info.filename == "docProps/custom.xml":
+                    continue
+                target.writestr(info, data)
+            target.writestr("docProps/custom.xml", _custom_xml(chunks, existing))
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _content_types(data: bytes) -> bytes:
@@ -551,7 +587,10 @@ def _relationships(data: bytes) -> bytes:
 
 def _custom_xml(chunks: list[str], existing: bytes | None) -> bytes:
     if existing:
-        root = ElementTree.fromstring(existing)
+        try:
+            root = ElementTree.fromstring(existing)
+        except ElementTree.ParseError as exc:
+            raise ValueError("The document's custom properties are not readable.") from exc
         for child in list(root):
             if child.attrib.get("name", "").startswith("ZOTERO_PREF_"):
                 root.remove(child)

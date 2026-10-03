@@ -1,30 +1,39 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "zotero-mcp"
-version = "1.0.2"
+version = "1.1.0"
 description = "Model Context Protocol server for a personal Zotero library, including Word citation fields."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Jayaram Nambiar" }]
-keywords = ["zotero", "mcp", "citations", "word"]
+keywords = ["zotero", "mcp", "model-context-protocol", "citations", "word"]
 classifiers = [
-    "License :: OSI Approved :: MIT License",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Text Processing :: Markup",
 ]
 dependencies = [
     "mcp>=2.0,<3",
-    "pydantic>=2",
-    "python-docx>=1.1",
+    "pydantic>=2,<3",
+    "python-docx>=1.1,<2",
 ]
 
 [project.urls]
 Homepage = "https://github.com/Jayaram-Nambiar/zotero-mcp"
-Documentation = "https://www.zotero.org/support/dev/web_api/v3/basics"
+Documentation = "https://github.com/Jayaram-Nambiar/zotero-mcp#readme"
+Changelog = "https://github.com/Jayaram-Nambiar/zotero-mcp/blob/main/CHANGELOG.md"
 Issues = "https://github.com/Jayaram-Nambiar/zotero-mcp/issues"
 
 [project.scripts]

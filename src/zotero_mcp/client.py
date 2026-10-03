@@ -4,19 +4,22 @@ Reads prefer the desktop app at http://127.0.0.1:23119/api and use
 https://api.zotero.org when that library is empty or not running. Writes always
 use api.zotero.org. The user ID and API key come from the process environment,
 or on Windows from the user or system environment variables when the agent does
-not pass them. The key is sent only as a header. It is never accepted as a tool
-argument and never returned.
+not pass them. The key is sent only as a header to api.zotero.org, never to a
+host a response redirects to. It is never accepted as a tool argument and never
+returned.
 """
 
 from __future__ import annotations
 
 import hashlib
 import html
+import http.client
 import json
 import logging
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -40,22 +43,66 @@ LOCAL_API = "http://127.0.0.1:23119/api"
 WEB_API = "https://api.zotero.org"
 USER_AGENT = f"zotero-mcp/{__version__} (https://github.com/Jayaram-Nambiar/zotero-mcp)"
 LOCAL_TIMEOUT = 4
-WEB_TIMEOUT = 60
+# Half the 60 seconds many clients allow a tool call, so a stalled request ends
+# with the server's own error rather than the client's timeout.
+WEB_TIMEOUT = 30
+# A refused connection takes about two seconds on Windows, so a failed probe of
+# the desktop app is not repeated for this long.
+LOCAL_RETRY_SECONDS = 30
+# Zotero accepts at most 50 keys in one itemKey filter.
+BATCH_SIZE = 50
 _RESPONSE_LIMIT = 60_000
+_READ_LIMIT = 4 * 1024 * 1024
 _UPLOAD_LIMIT = 100 * 1024 * 1024
+_COLLECTION_LIMIT = 5_000
 _PATH_PART = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 _METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE"})
 _SKIP_TYPES = frozenset({"attachment", "note", "annotation"})
 _KEY = re.compile(r"^[A-Za-z0-9]{8}$")
+_CREDENTIAL_FORMATS = {
+    "ZOTERO_USER_ID": re.compile(r"^[0-9]+$"),
+    "ZOTERO_API_KEY": re.compile(r"^[A-Za-z0-9]+$"),
+}
 _TAG = re.compile(r"<[^>]+>")
-_PLACEHOLDER = "YOUR_"
+# Zotero's schema maps these item-type fields onto title, date, and publicationTitle.
+_TITLE_FIELDS = ("title", "caseName", "nameOfAct", "subject")
+_DATE_FIELDS = ("date", "dateDecided", "dateEnacted", "issueDate")
+_PUBLICATION_FIELDS = (
+    "publicationTitle",
+    "bookTitle",
+    "proceedingsTitle",
+    "websiteTitle",
+    "blogTitle",
+    "forumTitle",
+    "encyclopediaTitle",
+    "dictionaryTitle",
+    "programTitle",
+    "sessionTitle",
+)
 _WINDOWS_ENVIRONMENT = (
     ("HKEY_CURRENT_USER", "Environment"),
     ("HKEY_LOCAL_MACHINE", r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
 )
 
 _local_has_items = False
+_local_retry_at = 0.0
 _logged_empty_local = False
+
+
+class _KeyStaysOnHost(urllib.request.HTTPRedirectHandler):
+    """Follow redirects, but drop the API key when one leads to another host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN201
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None and urllib.parse.urlsplit(newurl).netloc != urllib.parse.urlsplit(req.full_url).netloc:
+            redirected.remove_header("Zotero-api-key")
+        return redirected
+
+
+_opener = urllib.request.build_opener(_KeyStaysOnHost)
+
+# What a read can raise once _request has mapped HTTP and network failures.
+READ_ERRORS: tuple[type[Exception], ...] = (UnconfiguredError, LookupError, PermissionError, ConnectionError, ValueError)
 
 
 def _windows_environment(name: str) -> str:
@@ -76,24 +123,27 @@ def _windows_environment(name: str) -> str:
 
 
 def _credential(name: str) -> str:
-    """Return ZOTERO_USER_ID or ZOTERO_API_KEY, or "" when it is unset or a placeholder.
+    """Return ZOTERO_USER_ID or ZOTERO_API_KEY when it is well formed, or "".
 
-    The agent's environment wins. Some agents start servers without user
-    variables (Claude Desktop) or with an environment from before they were set
-    (Microsoft Store apps), so on Windows a missing, empty, or placeholder value
-    falls back to the stored user or system variable.
+    A user ID is digits and a key is letters and digits, so a placeholder such
+    as YOUR_API_KEY or a reference the agent did not expand, such as
+    ${env:ZOTERO_API_KEY}, counts as unset. The agent's environment wins. Some
+    agents start servers without user variables (Claude Desktop) or with an
+    environment from before they were set (Microsoft Store apps), so on Windows
+    an unset value falls back to the stored user or system variable.
     """
+    pattern = _CREDENTIAL_FORMATS[name]
     value = os.environ.get(name, "").strip()
-    if not value or _PLACEHOLDER in value:
+    if not pattern.fullmatch(value):
         value = _windows_environment(name).strip()
-    return "" if _PLACEHOLDER in value else value
+    return value if pattern.fullmatch(value) else ""
 
 
 def web_credentials() -> tuple[str, str] | None:
     """Return (user id, api key) when both values are usable."""
     user_id = _credential("ZOTERO_USER_ID")
     api_key = _credential("ZOTERO_API_KEY")
-    if not user_id.isdigit() or not api_key:
+    if not user_id or not api_key:
         return None
     return user_id, api_key
 
@@ -101,7 +151,7 @@ def web_credentials() -> tuple[str, str] | None:
 def require_user_id() -> str:
     """Return the numeric zotero.org user id used in Word citation URIs."""
     user_id = _credential("ZOTERO_USER_ID")
-    if not user_id.isdigit():
+    if not user_id:
         raise UnconfiguredError(
             "Set ZOTERO_USER_ID to the numeric user ID shown on "
             "https://www.zotero.org/settings/keys. Word matches citations to your "
@@ -131,7 +181,7 @@ def api_target(path: str, user_id: str) -> str:
         raise ValueError(
             "Key endpoints are not exposed. The server uses the configured API key and does not return it."
         )
-    if parts[0] == "groups":
+    if parts[0] == "groups" and len(parts) > 1:
         return "/".join(parts)
     return f"users/{user_id}/" + "/".join(parts)
 
@@ -147,6 +197,13 @@ def _creator_name(creator: dict[str, Any]) -> str:
     return " ".join(part for part in parts if part)
 
 
+def _first_field(data: dict[str, Any], fields: tuple[str, ...]) -> str | None:
+    for field in fields:
+        if data.get(field):
+            return str(data[field])
+    return None
+
+
 def item_summary(record: dict[str, Any]) -> ZoteroItem | None:
     data = record.get("data")
     if not isinstance(data, dict):
@@ -155,19 +212,17 @@ def item_summary(record: dict[str, Any]) -> ZoteroItem | None:
     if item_type in _SKIP_TYPES:
         return None
     key = str(record.get("key") or data.get("key") or "")
-    title = str(data.get("title") or "").strip()
-    if not key or not title:
+    if not key:
         return None
     creators = data.get("creators") or []
     names = [_creator_name(creator) for creator in creators if isinstance(creator, dict)]
-    publication = data.get("publicationTitle") or data.get("bookTitle") or data.get("proceedingsTitle")
     return ZoteroItem(
         item_key=key,
         item_type=item_type or None,
-        title=title,
+        title=(_first_field(data, _TITLE_FIELDS) or "").strip(),
         creators=[name for name in names if name],
-        date=str(data["date"]) if data.get("date") else None,
-        publication=str(publication) if publication else None,
+        date=_first_field(data, _DATE_FIELDS),
+        publication=_first_field(data, _PUBLICATION_FIELDS),
         doi=str(data["DOI"]) if data.get("DOI") else None,
         url=str(data["url"]) if data.get("url") else None,
     )
@@ -195,13 +250,36 @@ def item_detail(record: dict[str, Any]) -> ZoteroItemDetail | None:
     )
 
 
+def _reason(exc: BaseException) -> str:
+    reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    return str(reason) or type(reason).__name__
+
+
+def _error_body(exc: urllib.error.HTTPError) -> str:
+    try:
+        return exc.read().decode("utf-8", "replace")[:2000]
+    except (http.client.HTTPException, OSError):
+        return ""
+    finally:
+        exc.close()
+
+
+def _unreachable(verb: str, reason: str) -> str:
+    message = f"Could not reach Zotero: {reason}"
+    if verb != "GET":
+        message += " The request may still have been applied, so check the library before you retry."
+    return message
+
+
 def _request(url: str, headers: dict[str, str], timeout: float) -> tuple[Any, int]:
+    """GET JSON. HTTP and network failures become LookupError, PermissionError, or ConnectionError."""
     request = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _opener.open(request, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
             total = response.headers.get("Total-Results")
     except urllib.error.HTTPError as exc:
+        exc.close()
         if exc.code == 404:
             raise LookupError("Zotero has no record at that key.") from exc
         if exc.code == 403:
@@ -211,6 +289,8 @@ def _request(url: str, headers: dict[str, str], timeout: float) -> tuple[Any, in
             wait = f" Wait {retry_after} seconds and retry." if retry_after else " Retry later."
             raise ConnectionError(f"Zotero rate limit reached.{wait}") from exc
         raise ConnectionError(f"Zotero returned HTTP {exc.code}.") from exc
+    except (http.client.HTTPException, OSError) as exc:
+        raise ConnectionError(f"Could not reach Zotero: {_reason(exc)}") from exc
     total_results = int(total) if isinstance(total, str) and total.isdigit() else 0
     return payload, total_results
 
@@ -254,15 +334,19 @@ def _local_library_ready() -> bool:
     """Use the desktop app only when it is up and its library contains items.
 
     An enabled but unsynced local database answers quickly with zero items.
-    Treating that as authoritative would hide the zotero.org library.
+    Treating that as authoritative would hide the zotero.org library. A probe
+    that fails is not repeated for LOCAL_RETRY_SECONDS.
     """
-    global _local_has_items, _logged_empty_local
+    global _local_has_items, _local_retry_at, _logged_empty_local
     if _local_has_items:
         return True
+    if time.monotonic() < _local_retry_at:
+        return False
     try:
         _payload, total = _local_get("items", {"limit": "1", "format": "json"})
-    except (urllib.error.URLError, TimeoutError, PermissionError, ConnectionError, json.JSONDecodeError, ValueError) as exc:
-        logger.info("Local Zotero API unavailable (%s); trying zotero.org", exc)
+    except (LookupError, PermissionError, ConnectionError, ValueError) as exc:
+        logger.info("Local Zotero API unavailable (%s); using zotero.org", exc)
+        _local_retry_at = time.monotonic() + LOCAL_RETRY_SECONDS
         return False
     if total > 0:
         _local_has_items = True
@@ -278,14 +362,17 @@ def zotero_get(path: str, params: dict[str, str]) -> tuple[Any, int, Literal["lo
 
     A 404 from the local app is not retried on the web: that record is not in the local library.
     """
+    global _local_has_items, _local_retry_at
     if _local_library_ready():
         try:
             payload, total = _local_get(path, params)
             return payload, total, "local"
         except LookupError:
             raise
-        except (urllib.error.URLError, TimeoutError, PermissionError, ConnectionError, json.JSONDecodeError, ValueError) as exc:
-            logger.info("Local Zotero read failed (%s); trying zotero.org", exc)
+        except (PermissionError, ConnectionError, ValueError) as exc:
+            logger.info("Local Zotero read failed (%s); using zotero.org", exc)
+            _local_has_items = False
+            _local_retry_at = time.monotonic() + LOCAL_RETRY_SECONDS
     payload, total = _web_get(path, params)
     return payload, total, "web"
 
@@ -344,6 +431,38 @@ def _clip_body(payload: Any, secret: str) -> Any:
     return {"truncated": True, "preview": encoded[:_RESPONSE_LIMIT]}
 
 
+def _response_body(raw: bytes, content_type: str, secret: str) -> tuple[Any, str]:
+    """Return the parsed body and a note for the message. Binary content is described, not returned."""
+    if not raw:
+        return None, ""
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None, f" The response is {content_type} content, which this tool does not return."
+    if len(raw) > _READ_LIMIT:
+        return {"truncated": True, "preview": redact(text[:_RESPONSE_LIMIT], secret)}, ""
+    try:
+        return _clip_body(json.loads(text), secret), ""
+    except json.JSONDecodeError:
+        if len(text) > _RESPONSE_LIMIT:
+            return {"truncated": True, "preview": redact(text[:_RESPONSE_LIMIT], secret)}, ""
+        return redact(text, secret), ""
+
+
+def _write_outcome(parsed: Any) -> tuple[Literal["OK", "API_Error"], str]:
+    """Report a multi-object write's failed objects, which Zotero returns with HTTP 200."""
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("failed"), dict) or not parsed["failed"]:
+        return "OK", ""
+    successful = parsed.get("successful") if isinstance(parsed.get("successful"), dict) else parsed.get("success")
+    done = len(successful) if isinstance(successful, dict) else 0
+    unchanged = len(parsed["unchanged"]) if isinstance(parsed.get("unchanged"), dict) else 0
+    note = (
+        f" {len(parsed['failed'])} object(s) failed, {done} succeeded, and {unchanged} were unchanged."
+        " body.failed gives each failure's code and message."
+    )
+    return ("OK" if done or unchanged else "API_Error"), note
+
+
 def _version_header(headers: Any) -> int | None:
     raw = headers.get("Last-Modified-Version") if headers is not None else None
     return int(raw) if isinstance(raw, str) and raw.isdigit() else None
@@ -363,7 +482,7 @@ def web_send(
     if_none_match: str | None = None,
     write_token: str | None = None,
 ) -> ZoteroApiResult:
-    verb = method.upper()
+    verb = method.strip().upper()
     if verb not in _METHODS:
         return ZoteroApiResult(status="API_Error", message="method must be GET, POST, PUT, PATCH, or DELETE.")
     creds = web_credentials()
@@ -407,12 +526,14 @@ def web_send(
         headers["Zotero-Write-Token"] = write_token
     request = urllib.request.Request(url, data=data, headers=headers, method=verb)
     try:
-        with urllib.request.urlopen(request, timeout=WEB_TIMEOUT) as response:
-            raw_body = response.read()
+        with _opener.open(request, timeout=WEB_TIMEOUT) as response:
             status = response.status
             version = _version_header(response.headers)
+            response_type = response.headers.get_content_type()
+            length = response.headers.get("Content-Length", "")
+            raw_body = response.read(_READ_LIMIT + 1)
     except urllib.error.HTTPError as exc:
-        detail = redact(exc.read().decode("utf-8", "replace")[:2000], api_key)
+        detail = redact(_error_body(exc), api_key)
         logger.warning("Zotero %s %s failed: HTTP %s", verb, relative, exc.code)
         return ZoteroApiResult(
             status="API_Error",
@@ -420,20 +541,19 @@ def web_send(
             message=detail or f"Zotero returned HTTP {exc.code}.",
             last_modified_version=_version_header(exc.headers),
         )
-    except (urllib.error.URLError, TimeoutError) as exc:
+    except (http.client.HTTPException, OSError) as exc:
         logger.warning("Zotero %s %s failed: %s", verb, relative, exc)
-        return ZoteroApiResult(status="API_Error", message=str(exc))
-    parsed: Any = None
-    if raw_body:
-        text = raw_body.decode("utf-8", "replace")
-        try:
-            parsed = _clip_body(json.loads(text), api_key)
-        except json.JSONDecodeError:
-            parsed = redact(text[:_RESPONSE_LIMIT], api_key)
+        return ZoteroApiResult(status="API_Error", message=_unreachable(verb, _reason(exc)))
+    # A sized read returns a cut-off body without raising, so compare it with Content-Length.
+    if length.isdigit() and len(raw_body) < min(int(length), _READ_LIMIT + 1):
+        logger.warning("Zotero %s %s response was cut off", verb, relative)
+        return ZoteroApiResult(status="API_Error", http_status=status, message=_unreachable(verb, "the response was cut off."))
+    parsed, note = _response_body(raw_body, response_type, api_key)
+    outcome, failures = _write_outcome(parsed)
     return ZoteroApiResult(
-        status="OK",
+        status=outcome,
         http_status=status,
-        message=f"Zotero {verb} {relative} returned HTTP {status}.",
+        message=f"Zotero {verb} {relative} returned HTTP {status}.{note}{failures}",
         last_modified_version=version,
         body=parsed,
     )
@@ -445,7 +565,7 @@ def list_collections() -> ZoteroCollections:
     total = 0
     source: Literal["local", "web"] | None = None
     try:
-        while start <= 1000:
+        while start < _COLLECTION_LIMIT:
             payload, total, source = zotero_get(
                 "collections",
                 {"limit": "100", "start": str(start), "sort": "title", "format": "json"},
@@ -472,17 +592,18 @@ def list_collections() -> ZoteroCollections:
             start += 100
             if start >= total:
                 break
-    except UnconfiguredError as exc:
-        return ZoteroCollections(status="Unconfigured", message=str(exc))
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError, LookupError, PermissionError, ConnectionError) as exc:
+    except READ_ERRORS as exc:
+        if isinstance(exc, UnconfiguredError):
+            return ZoteroCollections(status="Unconfigured", message=str(exc))
         return ZoteroCollections(status="API_Error", message=failure(exc))
     found = [item for item in collected if item.key and item.name]
     if not found:
         return ZoteroCollections(status="Not_Found", message="The library has no collections.", source=source, total_results=total)
     origin = _via(source) if source else "Zotero"
+    shown = f"The first {len(found)} of {total}" if total > start else f"{len(found)}"
     return ZoteroCollections(
         status="Found",
-        message=f"{len(found)} collection(s) from {origin}.",
+        message=f"{shown} collection(s) from {origin}.",
         source=source,
         total_results=total or len(found),
         collections=found,
@@ -513,6 +634,64 @@ def bibliography_line(record: Any) -> str:
     return plain_text(bib)
 
 
+def cited_items(keys: list[str], style: str) -> dict[str, tuple[dict[str, Any], str]]:
+    """Return each item's CSL data and plain bibliography line in `style`, by item key.
+
+    The desktop app answers one item at a time in milliseconds. zotero.org takes
+    most of a second per request, so web reads fetch BATCH_SIZE items at once:
+    a request per item would let a long document outlast the 60-second limit
+    many MCP clients put on a tool call. If the desktop app stops answering
+    partway, the remaining items are fetched from the web in batches.
+    """
+    found: dict[str, tuple[dict[str, Any], str]] = {}
+    remaining = list(keys)
+    while remaining and _local_library_ready():
+        key = remaining.pop(0)
+        found[key] = _cited_item(key, style)
+    for index in range(0, len(remaining), BATCH_SIZE):
+        chunk = remaining[index:index + BATCH_SIZE]
+        records, _total = _web_get(
+            "items",
+            {
+                "itemKey": ",".join(chunk),
+                "include": "csljson,bib",
+                "style": style,
+                "linkwrap": "0",
+                "format": "json",
+                "limit": str(BATCH_SIZE),
+            },
+        )
+        if not isinstance(records, list):
+            raise ValueError("Zotero items response was not a list.")
+        for record in records:
+            key = record.get("key") if isinstance(record, dict) else None
+            if key in chunk:
+                found[key] = _item_parts(key, record.get("csljson"), record)
+    missing = [key for key in keys if key not in found]
+    if missing:
+        raise LookupError("No library item uses " + ", ".join(missing) + ".")
+    return {key: found[key] for key in keys}
+
+
+def _cited_item(key: str, style: str) -> tuple[dict[str, Any], str]:
+    try:
+        csl_payload, _total, _source = zotero_get(f"items/{key}", {"format": "csljson"})
+        bib_payload, _total, _source = zotero_get(
+            f"items/{key}",
+            {"include": "bib", "style": style, "linkwrap": "0", "format": "json"},
+        )
+    except LookupError:
+        raise LookupError(f"No library item uses {key}.") from None
+    return _item_parts(key, csl_payload, bib_payload)
+
+
+def _item_parts(key: str, csl_payload: Any, bib_record: Any) -> tuple[dict[str, Any], str]:
+    try:
+        return csl_item(csl_payload), bibliography_line(bib_record)
+    except ValueError as exc:
+        raise ValueError(f"{key}: {exc}") from None
+
+
 def valid_item_key(value: str) -> bool:
     return _KEY.fullmatch(value) is not None
 
@@ -526,21 +705,28 @@ def upload_file(item_key: str, file_path: str) -> ZoteroApiResult:
     key = item_key.strip()
     if not valid_item_key(key):
         return ZoteroApiResult(status="API_Error", message="item_key must be an 8-character Zotero key.")
-    path = Path(file_path)
+    path = Path(file_path.strip()).expanduser()
+    if not path.is_absolute():
+        return ZoteroApiResult(status="API_Error", message="file_path must be a full path, such as C:\\papers\\paper.pdf or /Users/you/paper.pdf.")
+    if web_credentials() is None:
+        return ZoteroApiResult(status="Unconfigured", message="Zotero uploads need ZOTERO_USER_ID and ZOTERO_API_KEY.")
     if not path.is_file():
         return ZoteroApiResult(status="API_Error", message="file_path is not a file on this computer.")
-    size = path.stat().st_size
-    if size > _UPLOAD_LIMIT:
-        return ZoteroApiResult(status="API_Error", message="The file is larger than the 100 MB upload limit.")
-    payload = path.read_bytes()
+    try:
+        stat = path.stat()
+        if stat.st_size > _UPLOAD_LIMIT:
+            return ZoteroApiResult(status="API_Error", message="The file is larger than the 100 MB upload limit.")
+        payload = path.read_bytes()
+    except OSError as exc:
+        return ZoteroApiResult(status="API_Error", message=f"Could not read file_path: {exc.strerror or exc}")
     authorized = web_send(
         "POST",
         f"items/{key}/file",
         form={
-            "md5": hashlib.md5(payload).hexdigest(),
+            "md5": hashlib.md5(payload, usedforsecurity=False).hexdigest(),
             "filename": path.name,
-            "filesize": str(size),
-            "mtime": str(int(path.stat().st_mtime * 1000)),
+            "filesize": str(len(payload)),
+            "mtime": str(int(stat.st_mtime * 1000)),
         },
         if_none_match="*",
     )
@@ -564,15 +750,14 @@ def upload_file(item_key: str, file_path: str) -> ZoteroApiResult:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=WEB_TIMEOUT) as response:
+        with _opener.open(request, timeout=WEB_TIMEOUT) as response:
             upload_status = response.status
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")[:2000]
         logger.warning("Zotero file upload failed: HTTP %s", exc.code)
-        return ZoteroApiResult(status="API_Error", http_status=exc.code, message=detail or f"File upload returned HTTP {exc.code}.")
-    except (urllib.error.URLError, TimeoutError) as exc:
+        return ZoteroApiResult(status="API_Error", http_status=exc.code, message=_error_body(exc) or f"File upload returned HTTP {exc.code}.")
+    except (http.client.HTTPException, OSError) as exc:
         logger.warning("Zotero file upload failed: %s", exc)
-        return ZoteroApiResult(status="API_Error", message=str(exc))
+        return ZoteroApiResult(status="API_Error", message=f"Could not reach Zotero's file storage: {_reason(exc)}")
     if upload_status not in {200, 201, 204}:
         return ZoteroApiResult(status="API_Error", http_status=upload_status, message=f"File upload returned HTTP {upload_status}.")
     registered = web_send(

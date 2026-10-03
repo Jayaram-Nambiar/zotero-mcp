@@ -29,9 +29,9 @@ Never send your Zotero API key. If a key may have leaked, revoke it first.
 
 ## Safeguards in the server
 
-- The server reads the key from its process environment and, on Windows, from your user or system environment variables when the agent does not pass it.
-- It sends the key only as the `Zotero-API-Key` header to `api.zotero.org`. It never accepts the key as a tool argument or returns it in a result, and never sends it to the local Zotero app or to the file-storage address used for uploads.
+- The server reads the key from its process environment and, on Windows, from your user or system environment variables when the agent does not pass it. A user ID that is not all digits, or a key that is not all letters and digits, counts as missing, so a malformed value never reaches a request header or an error message.
+- It sends the key only as the `Zotero-API-Key` header to `api.zotero.org`. It never accepts the key as a tool argument or returns it in a result. It never sends the key to the local Zotero app, to the file-storage address used for uploads, or to another host that a response redirects to.
 - It removes the key from error messages and response bodies before returning them.
 - `zotero_api` accepts only relative Zotero API paths and refuses Zotero's key endpoints, so an agent can neither read the key's details nor send the key to another host.
 - `zotero_api` refuses `DELETE` unless `confirm_delete` is true. This is a guardrail, not a substitute for a key without write access.
-- `upload_zotero_file` and `embed_zotero_word_fields` read the local files you name. Point them only at files you intend to upload or convert. By default, `embed_zotero_word_fields` writes a new document next to the original; it overwrites an existing file only when that file is named as the output.
+- `upload_zotero_file` and `embed_zotero_word_fields` read the local files you name, by full path only. Point them only at files you intend to upload or convert. `upload_zotero_file` never replaces a file an attachment already has. `embed_zotero_word_fields` writes a new document and never changes the original; it overwrites another existing file only when that file is named as the output.
